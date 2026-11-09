@@ -20,7 +20,8 @@ You need your own disc image of Midnight Club II (USA) as an `.iso`. A `.chd` ca
 2. Run `MC2Recomp.exe`. The cover art downloads in the background the first time.
 3. Press **Play**. The first time, it asks for your disc image; the launcher remembers it
    (**Settings > Disc Image** changes it).
-4. **Settings** has the options below. Every option starts off, so a fresh install plays the game as it is on a PS2.
+4. **Settings** has two tabs: **Graphics**, with the options below, and **Controls**. Every option starts off, so a fresh
+   install plays the game as it is on a PS2.
 
 ### Options
 
@@ -36,6 +37,11 @@ You need your own disc image of Midnight Club II (USA) as an `.iso`. A `.chd` ca
   16-bit picture)
 - **Smooth Distant Textures** (less shimmer on far buildings; not something a PS2 does)
 - **Skip Intro**: straight to the menu, with the game's own developer switch
+
+**Controls** rebinds every PS2 button and each direction of both analog sticks, for a controller or the keyboard and
+mouse. A controller row takes a button, a trigger or a stick direction; triggers and stick directions stay analog on a
+stick, so the right stick's up and down (the game's gas and brake) can go on the triggers. Choose a row, then press the
+new input. An input that another row had swaps with it. The bindings are kept in the game's `keys.ini`.
 
 ## Build
 

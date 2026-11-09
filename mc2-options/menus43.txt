@@ -7,7 +7,15 @@
 #                     during boot and the intro videos, 0x11 in the front end, 0x12 from the moment a race or cruise is
 #                     started (its loading screen included) until "Exit To Front End". Found by EE RAM dumps of recorded
 #                     sessions, checked over arcade, career and a second race.
+#                     0x0042708C is 1 while a race or cruise is loading (from the start of its loading screen until the
+#                     first frame of driving, found 2026-11-09 by tracking EE RAM over the loading screen): with "&0042708C=0"
+#                     the loading screen stays 4:3 and the picture turns 16:9 when the driving shows.
 #   PS2_WIDE_WORD     the runtime writes 1/0 into this 16-bit option word each frame, so the widescreen patch's
 #                     projection (mc2-options\toggles.txt, 000FFF00) follows the picture.
-PS2_WIDE_ONLY_IF=00436C48=0x12
+#   PS2_WIDE_FLOAT    the game's aspect * height / width (0x0042FAB4, stored by its display setup at 0x36C880, run at boot with
+#                     the option word on and not again for races or menus), which its 3D projection uses. Without this the
+#                     menus' 3D (the controller picture, the turning cars on the car select) kept the 16:9 value in a 4:3 picture;
+#                     the runtime rescales it whenever the option word changes.
+PS2_WIDE_ONLY_IF=00436C48=0x12&0042708C=0
 PS2_WIDE_WORD=000FFF00
+PS2_WIDE_FLOAT=0042FAB4

@@ -48,6 +48,7 @@
 #include <shellapi.h>
 #include <commdlg.h>
 #include <wchar.h>
+#include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
 
@@ -77,6 +78,7 @@
 #define S_DISC_W 230          /* the disc image box */
 #define S_SEG_W 38            /* one of the 1x..4x boxes */
 #define S_SEG2_W 70           /* one of the 4:3 / 16:9 and 16-bit / 32-bit boxes */
+#define S_SEG3_W 104          /* Controller / Keyboard */
 #define S_SEG_GAP 4
 
 /* The red of the car on the cover. */
@@ -129,7 +131,7 @@ static const wchar_t* k_filter_words[3] = { L"ps2", L"nearest", L"bilinear" };
 static const wchar_t* k_filter_names[3] = { L"Bilinear (PS2)", L"Nearest", L"Bilinear (Forced)" };
 static const wchar_t* k_look_names[7] = { L"Crisp", L"Crisp + edges", L"Soft", L"Soft + edges", L"Sharp", L"Sharp + edges", L"FSR" };
 
-/* The settings rows, in the order they are shown. */
+/* The Graphics tab's rows, in the order they are shown. */
 enum { S_FULLSCREEN, S_SCALE, S_VSYNC, S_PACING, S_LOOK, S_TEXFILTER, S_SIXTY, S_WIDE, S_HUD43, S_MENUS43, S_TRUECOLOR, S_DITHER, S_SMOOTH, S_SKIPINTRO, S_DISC, S_BACK, S_COUNT };
 static int g_page = PAGE_LIST;
 static int g_srow;      /* highlighted settings row */
@@ -217,6 +219,353 @@ static void save_options(const Game* g) {
         swprintf(v, 16, L"%d", kv[i].v);
         WritePrivateProfileStringW(g->id, kv[i].key, v, g_ini);
     }
+}
+
+/* --- keys.ini: the controls ---------------------------------------------------
+ * The game's keys.ini (games\<id>\keys.ini, host/keymap.cpp in the toolkit) says which key or mouse button, and which
+ * controller button ('pad_cross = a'), works each PS2 button. The game reads it at start and again when its window gets
+ * the focus back. The Controls page reads and writes its lines; the other lines and the comments are left as they are. */
+
+/* One row of the Controls page: the keys.ini word, the PS2 button or stick direction it is, the game's default key(s) and
+ * controller input. Every row takes a controller input: a button, a trigger or a stick direction (the original game steers
+ * on the left stick and can drive with the right stick's up and down, so both sticks can be moved anywhere). */
+typedef struct { const char* word; const wchar_t* label; int pad; const char* key_default; const char* pad_default; } Bind;
+static const Bind k_binds[] = {
+    { "dpad_up", L"D-pad Up", 1, "Up", "dpup" },
+    { "dpad_down", L"D-pad Down", 1, "Down", "dpdown" },
+    { "dpad_left", L"D-pad Left", 1, "Left", "dpleft" },
+    { "dpad_right", L"D-pad Right", 1, "Right", "dpright" },
+    { "left_up", L"Left Stick Up", 1, "W", "leftstick_up" },
+    { "left_down", L"Left Stick Down", 1, "S", "leftstick_down" },
+    { "left_left", L"Left Stick Left", 1, "A", "leftstick_left" },
+    { "left_right", L"Left Stick Right", 1, "D", "leftstick_right" },
+    { "right_up", L"Right Stick Up", 1, "I", "rightstick_up" },
+    { "right_down", L"Right Stick Down", 1, "K", "rightstick_down" },
+    { "right_left", L"Right Stick Left", 1, "J", "rightstick_left" },
+    { "right_right", L"Right Stick Right", 1, "L", "rightstick_right" },
+    { "cross", L"Cross", 1, "X", "a" },
+    { "circle", L"Circle", 1, "C", "b" },
+    { "square", L"Square", 1, "Z", "x" },
+    { "triangle", L"Triangle", 1, "V", "y" },
+    { "l1", L"L1", 1, "B", "leftshoulder" },
+    { "r1", L"R1", 1, "N", "rightshoulder" },
+    { "l2", L"L2", 1, "M", "lefttrigger" },
+    { "r2", L"R2", 1, "key 54", "righttrigger" },
+    { "l3", L"L3", 1, "Left Alt", "leftstick" },
+    { "r3", L"R3", 1, "Space", "rightstick" },
+    { "start", L"Start", 1, "Enter", "start" },
+    { "select", L"Select", 1, "Tab", "back" },
+};
+#define BIND_COUNT ((int)(sizeof k_binds / sizeof k_binds[0]))
+/* keys.ini lines the page does not show, which only lose a key when it is given to a row here (else one key would press two
+ * buttons): God of War's roll and rage, the key card and quick menu keys. */
+static const char* k_hidden_words[] = { "roll", "rage", "help", "menu" };
+
+enum { DEV_CONTROLLER, DEV_KEYBOARD };
+static char g_keys_text[65536];         /* keys.ini as read */
+static char g_kb[BIND_COUNT][160];      /* each row's keys, as written in keys.ini ("Space, Enter") */
+static char g_pad[BIND_COUNT][32];      /* each row's controller button word ("a", "lefttrigger") */
+static char g_hidden[sizeof k_hidden_words / sizeof k_hidden_words[0]][160];
+
+static void keys_path(const Game* g, wchar_t* out) {
+    swprintf(out, MAX_PATH, L"%ls\\games\\%ls\\keys.ini", g->tool, g->id);
+}
+
+/* Lower case, letters and digits only: how the game compares names (keymap.cpp squash). */
+static void squash(const char* in, char* out, size_t n) {
+    size_t k = 0;
+    for (; *in && k + 1 < n; in++)
+        if ((*in >= 'a' && *in <= 'z') || (*in >= '0' && *in <= '9')) out[k++] = *in;
+        else if (*in >= 'A' && *in <= 'Z') out[k++] = (char)(*in - 'A' + 'a');
+    out[k] = 0;
+}
+
+static void trim(char* s) {
+    size_t a = 0, b = strlen(s);
+    while (a < b && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r')) a++;
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r')) b--;
+    memmove(s, s + a, b - a);
+    s[b - a] = 0;
+}
+
+/* The value of the last line 'name = value' (the game lets a later line win), or 0 when there is none. */
+static int keys_get(const char* name, char* out, size_t n) {
+    char want[64], line[512], key[64];
+    int found = 0;
+    squash(name, want, sizeof want);
+    for (const char* p = g_keys_text; *p;) {
+        const char* e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        if (len >= sizeof line) len = sizeof line - 1;
+        memcpy(line, p, len);
+        line[len] = 0;
+        p += e ? (size_t)(e - p) + 1 : strlen(p);
+        trim(line);
+        if (!line[0] || line[0] == '#' || line[0] == ';' || line[0] == '[') continue;
+        char* hash = strstr(line, " #");
+        if (hash) *hash = 0;
+        char* eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        squash(line, key, sizeof key);
+        if (strcmp(key, want) != 0) continue;
+        snprintf(out, n, "%s", eq + 1);
+        trim(out);
+        found = 1;
+    }
+    return found;
+}
+
+/* keys.ini with the line of `name` set to 'name = value' (the last one, when it is there more than once), else added at the end. */
+static void keys_set(const char* name, const char* value) {
+    static char out[sizeof g_keys_text];
+    char want[64], line[512], key[64], repl[256];
+    squash(name, want, sizeof want);
+    snprintf(repl, sizeof repl, "%s = %s", name, value);
+    /* find the last matching line */
+    const char* last = NULL;
+    size_t last_len = 0;
+    for (const char* p = g_keys_text; *p;) {
+        const char* e = strchr(p, '\n');
+        size_t len = e ? (size_t)(e - p) : strlen(p);
+        size_t cl = len < sizeof line ? len : sizeof line - 1;
+        memcpy(line, p, cl);
+        line[cl] = 0;
+        trim(line);
+        char* eq = line[0] && line[0] != '#' && line[0] != ';' ? strchr(line, '=') : NULL;
+        if (eq) {
+            *eq = 0;
+            squash(line, key, sizeof key);
+            if (!strcmp(key, want)) { last = p; last_len = len; }
+        }
+        p += e ? len + 1 : len;
+    }
+    size_t used = strlen(g_keys_text);
+    if (last) {
+        if (last_len && last[last_len - 1] == '\r') last_len--;
+        snprintf(out, sizeof out, "%.*s%s%s", (int)(last - g_keys_text), g_keys_text, repl, last + last_len);
+    } else {
+        snprintf(out, sizeof out, "%s%s%s\r\n", g_keys_text, used && g_keys_text[used - 1] != '\n' ? "\r\n" : "", repl);
+    }
+    snprintf(g_keys_text, sizeof g_keys_text, "%s", out);
+}
+
+static void keys_load(const Game* g) {
+    wchar_t path[MAX_PATH];
+    keys_path(g, path);
+    g_keys_text[0] = 0;
+    FILE* f = _wfopen(path, L"rb");
+    if (f) {
+        size_t n = fread(g_keys_text, 1, sizeof g_keys_text - 1, f);
+        g_keys_text[n] = 0;
+        fclose(f);
+    }
+    for (int i = 0; i < BIND_COUNT; i++) {
+        char name[48];
+        if (!keys_get(k_binds[i].word, g_kb[i], sizeof g_kb[i])) snprintf(g_kb[i], sizeof g_kb[i], "%s", k_binds[i].key_default);
+        if (!k_binds[i].pad) continue;
+        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
+        if (!keys_get(name, g_pad[i], sizeof g_pad[i])) snprintf(g_pad[i], sizeof g_pad[i], "%s", k_binds[i].pad_default);
+    }
+    static const char* hidden_defaults[] = { "Left Ctrl, Mouse X1", "none", "none", "none" };
+    for (int i = 0; i < (int)(sizeof k_hidden_words / sizeof k_hidden_words[0]); i++)
+        if (!keys_get(k_hidden_words[i], g_hidden[i], sizeof g_hidden[i])) snprintf(g_hidden[i], sizeof g_hidden[i], "%s", hidden_defaults[i]);
+}
+
+static int keys_save(const Game* g) {
+    wchar_t path[MAX_PATH];
+    keys_path(g, path);
+    if (!g_keys_text[0])    /* no keys.ini yet (the game writes the full one on its first start): a short one with a heading */
+        snprintf(g_keys_text, sizeof g_keys_text,
+                 "# keys.ini: the controls. The launcher's Settings > Controls page writes these lines; any line that is not\r\n"
+                 "# here keeps the game's default. Delete the file to get every default back.\r\n");
+    FILE* f = _wfopen(path, L"wb");
+    if (!f) return 0;
+    fwrite(g_keys_text, 1, strlen(g_keys_text), f);
+    fclose(f);
+    return 1;
+}
+
+/* A key as one name, the way the game compares keys: "return" and "enter" are the same key, and so on. */
+static void key_canon(const char* token, char* out, size_t n) {
+    static const char* same[][2] = {
+        { "return", "enter" }, { "escape", "esc" }, { "kpenter", "keypadenter" }, { "numenter", "keypadenter" }, { "numpadenter", "keypadenter" },
+        { "shift", "leftshift" }, { "lshift", "leftshift" }, { "rshift", "rightshift" }, { "ctrl", "leftctrl" }, { "control", "leftctrl" },
+        { "lctrl", "leftctrl" }, { "rctrl", "rightctrl" }, { "alt", "leftalt" }, { "lalt", "leftalt" }, { "ralt", "rightalt" },
+        { "del", "delete" }, { "ins", "insert" }, { "pgup", "pageup" }, { "pgdn", "pagedown" }, { "caps", "capslock" },
+        { "lmb", "leftmouse" }, { "mouse1", "leftmouse" }, { "rmb", "rightmouse" }, { "mouse2", "rightmouse" }, { "mmb", "middlemouse" },
+        { "mouse3", "middlemouse" }, { "mouse4", "mousex1" }, { "mouse5", "mousex2" }, { "comma", "key54" }, { "period", "key55" },
+        { "semicolon", "key51" }, { "minus", "key45" }, { "plus", "key46" }, { "equals", "key46" },
+    };
+    squash(token, out, n);
+    for (size_t i = 0; i < sizeof same / sizeof same[0]; i++)
+        if (!strcmp(out, same[i][0])) { snprintf(out, n, "%s", same[i][1]); return; }
+}
+
+/* Does the list "Space, Enter" have the key `canon` (key_canon)? Removes it when `remove`. */
+static int list_has(char* list, const char* canon, int remove) {
+    char copy[160], outl[160] = "", c[48];
+    int has = 0;
+    snprintf(copy, sizeof copy, "%s", list);
+    for (char* t = strtok(copy, ","); t; t = strtok(NULL, ",")) {
+        char tok[64];
+        snprintf(tok, sizeof tok, "%s", t);
+        trim(tok);
+        key_canon(tok, c, sizeof c);
+        if (!strcmp(c, canon)) { has = 1; continue; }
+        if (!strcmp(c, "none") || !tok[0]) continue;
+        if (outl[0]) strncat(outl, ", ", sizeof outl - strlen(outl) - 1);
+        strncat(outl, tok, sizeof outl - strlen(outl) - 1);
+    }
+    if (has && remove) snprintf(list, 160, "%s", outl[0] ? outl : "none");
+    return has;
+}
+
+/* Gives the key `token` to row `row`. A row that had it gets this row's old keys (a swap); a hidden line only loses it. */
+static void bind_key(int row, const char* token) {
+    char canon[48], old[160];
+    key_canon(token, canon, sizeof canon);
+    snprintf(old, sizeof old, "%s", g_kb[row]);
+    list_has(old, canon, 1);
+    for (int i = 0; i < BIND_COUNT; i++) {
+        if (i == row || !list_has(g_kb[i], canon, 1)) continue;
+        if (strcmp(old, "none") != 0) {
+            if (!strcmp(g_kb[i], "none")) snprintf(g_kb[i], sizeof g_kb[i], "%s", old);
+            else { strncat(g_kb[i], ", ", sizeof g_kb[i] - strlen(g_kb[i]) - 1); strncat(g_kb[i], old, sizeof g_kb[i] - strlen(g_kb[i]) - 1); }
+        }
+        keys_set(k_binds[i].word, g_kb[i]);
+    }
+    for (int i = 0; i < (int)(sizeof k_hidden_words / sizeof k_hidden_words[0]); i++)
+        if (list_has(g_hidden[i], canon, 1)) keys_set(k_hidden_words[i], g_hidden[i]);
+    snprintf(g_kb[row], sizeof g_kb[row], "%s", token);
+    keys_set(k_binds[row].word, g_kb[row]);
+}
+
+/* A controller button word as the game reads it, in one spelling (lb -> leftshoulder, ...). */
+static void pad_canon(const char* word, char* out, size_t n) {
+    static const char* same[][2] = {
+        { "lb", "leftshoulder" }, { "rb", "rightshoulder" }, { "l1", "leftshoulder" }, { "r1", "rightshoulder" }, { "lt", "lefttrigger" },
+        { "rt", "righttrigger" }, { "l2", "lefttrigger" }, { "r2", "righttrigger" }, { "zl", "lefttrigger" }, { "zr", "righttrigger" },
+        { "ls", "leftstick" }, { "rs", "rightstick" }, { "l3", "leftstick" }, { "r3", "rightstick" }, { "view", "back" }, { "select", "back" },
+        { "menu", "start" }, { "dpadup", "dpup" }, { "dpaddown", "dpdown" }, { "dpadleft", "dpleft" }, { "dpadright", "dpright" }, { "", "none" },
+    };
+    squash(word, out, n);
+    for (size_t i = 0; i < sizeof same / sizeof same[0]; i++)
+        if (!strcmp(out, same[i][0])) { snprintf(out, n, "%s", same[i][1]); return; }
+}
+
+/* Gives the controller button `word` to row `row`; a row that had it gets this row's old button. */
+static void bind_pad(int row, const char* word) {
+    char want[32], c[32], name[48];
+    pad_canon(word, want, sizeof want);
+    for (int i = 0; i < BIND_COUNT; i++) {
+        if (i == row || !k_binds[i].pad) continue;
+        pad_canon(g_pad[i], c, sizeof c);
+        if (strcmp(c, want) != 0 || !strcmp(want, "none")) continue;
+        snprintf(g_pad[i], sizeof g_pad[i], "%s", g_pad[row]);
+        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
+        keys_set(name, g_pad[i]);
+    }
+    snprintf(g_pad[row], sizeof g_pad[row], "%s", want);
+    snprintf(name, sizeof name, "pad_%s", k_binds[row].word);
+    keys_set(name, g_pad[row]);
+}
+
+/* How a controller button is shown: the Xbox names, which is what XInput pads (and SDL's positions) use. */
+static const wchar_t* pad_display(const char* word) {
+    static const struct { const char* w; const wchar_t* d; } names[] = {
+        { "a", L"A" }, { "b", L"B" }, { "x", L"X" }, { "y", L"Y" }, { "back", L"View" }, { "start", L"Menu" }, { "guide", L"Guide" },
+        { "leftstick", L"LS (press)" }, { "rightstick", L"RS (press)" }, { "leftshoulder", L"LB" }, { "rightshoulder", L"RB" },
+        { "lefttrigger", L"LT" }, { "righttrigger", L"RT" }, { "dpup", L"D-pad Up" }, { "dpdown", L"D-pad Down" },
+        { "dpleft", L"D-pad Left" }, { "dpright", L"D-pad Right" }, { "misc1", L"Share" }, { "touchpad", L"Touchpad" },
+        { "paddle1", L"Paddle 1" }, { "paddle2", L"Paddle 2" }, { "paddle3", L"Paddle 3" }, { "paddle4", L"Paddle 4" }, { "none", L"None" },
+        { "leftstickup", L"LS Up" }, { "leftstickdown", L"LS Down" }, { "leftstickleft", L"LS Left" }, { "leftstickright", L"LS Right" },
+        { "rightstickup", L"RS Up" }, { "rightstickdown", L"RS Down" }, { "rightstickleft", L"RS Left" }, { "rightstickright", L"RS Right" },
+    };
+    char c[32];
+    pad_canon(word, c, sizeof c);
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!strcmp(c, names[i].w)) return names[i].d;
+    return L"?";
+}
+
+/* A key list as shown: keys written as SDL scancode numbers get their symbol back. */
+static void kb_display(const char* list, wchar_t* out, size_t n) {
+    static const struct { const char* k; const char* d; } sym[] = {
+        { "key 45", "-" }, { "key 46", "=" }, { "key 47", "[" }, { "key 48", "]" }, { "key 49", "\\" }, { "key 51", ";" },
+        { "key 52", "'" }, { "key 53", "`" }, { "key 54", "," }, { "key 55", "." }, { "key 56", "/" },
+        { "key 84", "Keypad /" }, { "key 85", "Keypad *" }, { "key 86", "Keypad -" }, { "key 87", "Keypad +" }, { "key 99", "Keypad ." },
+    };
+    char buf[200] = "";
+    char copy[160];
+    snprintf(copy, sizeof copy, "%s", list);
+    for (char* t = strtok(copy, ","); t; t = strtok(NULL, ",")) {
+        char tok[64];
+        snprintf(tok, sizeof tok, "%s", t);
+        trim(tok);
+        const char* show = tok;
+        for (size_t i = 0; i < sizeof sym / sizeof sym[0]; i++)
+            if (!_stricmp(tok, sym[i].k)) show = sym[i].d;
+        if (buf[0]) strncat(buf, ", ", sizeof buf - strlen(buf) - 1);
+        strncat(buf, show, sizeof buf - strlen(buf) - 1);
+    }
+    if (!buf[0] || !_stricmp(buf, "none")) snprintf(buf, sizeof buf, "None");
+    MultiByteToWideChar(CP_UTF8, 0, buf, -1, out, (int)n);
+}
+
+/* The keys.ini name of a key from WM_KEYDOWN / WM_SYSKEYDOWN, or NULL for a key that cannot be given (F1, F2, F5, F8, F9 and
+ * F11 belong to the game window: quick menu, picture, quick save and load, problem report, full screen). */
+static const char* vk_token(WPARAM vk, LPARAM lp) {
+    static char buf[24];
+    int ext = (lp >> 24) & 1, scan = (lp >> 16) & 0xFF;
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { buf[0] = (char)vk; buf[1] = 0; return buf; }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        int f = (int)(vk - VK_F1) + 1;
+        if (f == 1 || f == 2 || f == 5 || f == 8 || f == 9 || f == 11) return NULL;
+        snprintf(buf, sizeof buf, "F%d", f);
+        return buf;
+    }
+    if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) { snprintf(buf, sizeof buf, "Keypad %d", (int)(vk - VK_NUMPAD0)); return buf; }
+    switch (vk) {
+    case VK_SPACE: return "Space";
+    case VK_RETURN: return ext ? "Keypad Enter" : "Enter";
+    case VK_ESCAPE: return "Esc";
+    case VK_TAB: return "Tab";
+    case VK_BACK: return "Backspace";
+    case VK_CAPITAL: return "CapsLock";
+    case VK_SHIFT: return scan == 0x36 ? "Right Shift" : "Left Shift";
+    case VK_CONTROL: return ext ? "Right Ctrl" : "Left Ctrl";
+    case VK_MENU: return ext ? "Right Alt" : "Left Alt";
+    case VK_UP: return "Up";
+    case VK_DOWN: return "Down";
+    case VK_LEFT: return "Left";
+    case VK_RIGHT: return "Right";
+    case VK_INSERT: return "Insert";
+    case VK_DELETE: return "Delete";
+    case VK_HOME: return "Home";
+    case VK_END: return "End";
+    case VK_PRIOR: return "PageUp";
+    case VK_NEXT: return "PageDown";
+    /* the punctuation keys (by their place on a US keyboard) and the keypad's operator keys: written as SDL scancode numbers,
+     * since names like "/" or "Keypad *" are not ones the game reads back as that one key */
+    case VK_DIVIDE: return "key 84";
+    case VK_MULTIPLY: return "key 85";
+    case VK_SUBTRACT: return "key 86";
+    case VK_ADD: return "key 87";
+    case VK_DECIMAL: return "key 99";
+    case VK_OEM_MINUS: return "key 45";
+    case VK_OEM_PLUS: return "key 46";
+    case VK_OEM_4: return "key 47";
+    case VK_OEM_6: return "key 48";
+    case VK_OEM_5: return "key 49";
+    case VK_OEM_1: return "key 51";
+    case VK_OEM_7: return "key 52";
+    case VK_OEM_3: return "key 53";
+    case VK_OEM_COMMA: return "key 54";
+    case VK_OEM_PERIOD: return "key 55";
+    case VK_OEM_2: return "key 56";
+    }
+    return NULL;
 }
 
 /* --- games.txt -------------------------------------------------------------- */
@@ -428,6 +777,10 @@ static int prepare(const Game* g, Launch* L, wchar_t* err, size_t errn) {
     SetEnvironmentVariableW(L"PS2_PACE", o->pacing ? L"clock" : NULL);
     SetEnvironmentVariableW(L"PS2_PRESENT_MODE", o->vsync ? L"fifo" : NULL);
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", L->title);
+    /* the controls (Settings > Controls): the game's keys.ini, which is where the game looks anyway (next to the memory card) */
+    wchar_t keys[MAX_PATH];
+    keys_path(g, keys);
+    SetEnvironmentVariableW(L"PS2_KEYS", keys);
     /* the game window shows this launcher's icon (the runtime takes it out of this program) */
     wchar_t self[MAX_PATH];
     if (GetModuleFileNameW(NULL, self, MAX_PATH)) SetEnvironmentVariableW(L"PS2_WINDOW_ICON", self);
@@ -435,6 +788,7 @@ static int prepare(const Game* g, Launch* L, wchar_t* err, size_t errn) {
      * (PS2_WIDE_ONLY_IF, PS2_WIDE_WORD) that tell a race from a menu. */
     SetEnvironmentVariableW(L"PS2_WIDE_ONLY_IF", NULL);
     SetEnvironmentVariableW(L"PS2_WIDE_WORD", NULL);
+    SetEnvironmentVariableW(L"PS2_WIDE_FLOAT", NULL);
     SetEnvironmentVariableW(L"PS2_SKIP_TEXTURE", NULL);
     SetEnvironmentVariableW(L"PS2_SKIP_SUBTRACT", NULL);  /* (Remove Car Outlines and its nooutline.txt were taken out 2026-11-08) */
     if (menus43) {
@@ -520,7 +874,7 @@ static int check(const wchar_t* id) {
         out(L"name=%ls\n", L.name);
         out(L"cwd=%ls\nexe=%ls\ncmd=%ls\n", g->tool, g->exe, L.cmd);
         static const wchar_t* vars[] = { L"PS2_SCALE", L"PS2_TRUE_COLOR", L"PS2_PACE",
-                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR", L"PS2_WINDOW_ICON" };
+                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_WIDE_FLOAT", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR", L"PS2_WINDOW_ICON", L"PS2_KEYS" };
         for (int v = 0; v < (int)(sizeof vars / sizeof vars[0]); v++) {
             wchar_t val[512];
             if (GetEnvironmentVariableW(vars[v], val, 512)) out(L"%ls=%ls\n", vars[v], val);
@@ -588,8 +942,39 @@ static RECT button_rect(int row, int col) {
 
 static Game* sgame(void) { return &g_games[g_sel]; }
 
+/* The settings page has two tabs, Graphics and Controls, chosen in its heading. g_srow -1 is the heading itself. */
+enum { TAB_GRAPHICS, TAB_CONTROLS };
+static int g_tab = TAB_GRAPHICS;
+static int g_dev = DEV_CONTROLLER;  /* the Controls tab: the controller's buttons or the keyboard's keys */
+static int g_capture = -1;          /* the Controls row waiting for a key or button, or -1 */
+static DWORD g_capture_until;       /* it gives up then */
+static int g_ignore_up;             /* a mouse button given to a row: its button-up is not a click */
+static WORD g_capture_pad;          /* the controller buttons already down when the wait began */
+static WORD g_capture_trig;         /* bit 0 / bit 1: a trigger already pulled when it began; bits 2-9 a stick direction */
+static wchar_t g_cmsg[160];         /* a line about the last change ("Accelerate now has Space. Handbrake got E.") */
+
+/* The Controls tab's rows: 0 the Controller / Keyboard choice, then one per button, then Reset, then Back. */
+static int cbind_count(void) {
+    int n = 0;
+    for (int i = 0; i < BIND_COUNT; i++) n += g_dev == DEV_KEYBOARD || k_binds[i].pad;
+    return n;
+}
+static int cbind_index(int row) {    /* the k_binds index of a binding row, or -1 */
+    int n = 0;
+    for (int i = 0; i < BIND_COUNT; i++) {
+        if (g_dev != DEV_KEYBOARD && !k_binds[i].pad) continue;
+        if (++n == row) return i;
+    }
+    return -1;
+}
+#define C_DEVICE 0
+static int c_reset(void) { return cbind_count() + 1; }
+static int nrows(void) { return g_tab == TAB_GRAPHICS ? S_COUNT : cbind_count() + 3; }
+static int back_row(void) { return nrows() - 1; }
+
 static int srow_enabled(int row) {
     const Game* g = sgame();
+    if (row < 0 || g_tab != TAB_GRAPHICS) return 1;
     if (row == S_WIDE || row == S_SIXTY) return g->toggles;
     if (row == S_HUD43) return g->toggles && g->o.wide;
     if (row == S_DITHER) return !g->o.truecolor;
@@ -603,7 +988,7 @@ static RECT srow_rect(int row) {
     r.right = CLIENT_W - MARGIN;
     r.top = S_TOP + row * (S_ROW_H + S_ROW_GAP) - g_sscroll;
     r.bottom = r.top + S_ROW_H;
-    if (row == S_BACK) {    /* a button, not a full row */
+    if (row == back_row()) {    /* a button, not a full row */
         r.top += 10;
         r.left = (CLIENT_W - 160) / 2;
         r.right = r.left + 160;
@@ -611,33 +996,45 @@ static RECT srow_rect(int row) {
     return r;
 }
 
+/* The width of a row's value box. */
+static int sval_w(int row) {
+    if (g_tab == TAB_CONTROLS) return S_LOOK_W;
+    return row == S_LOOK || row == S_TEXFILTER ? S_LOOK_W : row == S_DISC ? S_DISC_W : S_VAL_W;
+}
+
 static RECT sval_rect(int row) {
     RECT rr = srow_rect(row), r;
     r.right = rr.right - 12;
-    r.left = r.right - (row == S_LOOK || row == S_TEXFILTER ? S_LOOK_W : row == S_DISC ? S_DISC_W : S_VAL_W);
+    r.left = r.right - sval_w(row);
     r.top = rr.top + 15;
     r.bottom = rr.bottom - 15;
     return r;
 }
 
 /* Rows with a row of boxes, one per value (like the resolution's 1x..4x): how many, their text, which one is on. */
-static int sseg_count(int row) { return row == S_SCALE ? 4 : row == S_MENUS43 || row == S_TRUECOLOR ? 2 : 0; }
-static int sseg_w(int row) { return row == S_SCALE ? S_SEG_W : S_SEG2_W; }
+static int sseg_count(int row) {
+    if (g_tab == TAB_CONTROLS) return row == C_DEVICE ? 2 : 0;
+    return row == S_SCALE ? 4 : row == S_MENUS43 || row == S_TRUECOLOR ? 2 : 0;
+}
+static int sseg_w(int row) { return g_tab == TAB_CONTROLS ? S_SEG3_W : row == S_SCALE ? S_SEG_W : S_SEG2_W; }
 
 static const wchar_t* sseg_text(int row, int k) {
     static const wchar_t* scale[4] = { L"1x", L"2x", L"3x", L"4x" };
+    if (g_tab == TAB_CONTROLS) return k ? L"Keyboard" : L"Controller";
     if (row == S_SCALE) return scale[k];
     if (row == S_MENUS43) return k ? L"16:9" : L"4:3";
     return k ? L"32-bit" : L"16-bit";
 }
 
 static int sseg_value(const Options* o, int row) {
+    if (g_tab == TAB_CONTROLS) return g_dev;
     if (row == S_SCALE) return o->scale - 1;
     if (row == S_MENUS43) return !o->menus43;   /* 4:3 menus and movies = the 4:3 Menus option on */
     return o->truecolor;
 }
 
 static void sseg_set(Options* o, int row, int k) {
+    if (g_tab == TAB_CONTROLS) { g_dev = k; g_capture = -1; g_cmsg[0] = 0; return; }
     if (row == S_SCALE) o->scale = k + 1;
     else if (row == S_MENUS43) o->menus43 = !k;
     else o->truecolor = k;
@@ -654,9 +1051,29 @@ static RECT sseg_rect(int row, int k) {   /* k 0..sseg_count(row)-1, left to rig
     return r;
 }
 
+/* The two tabs in the heading, as drawn (their width comes from the heading font). */
+static RECT tab_rect(int tab) {
+    static int w[2];
+    if (!w[0]) {
+        HDC dc = GetDC(NULL);
+        HGDIOBJ old = SelectObject(dc, g_font_head);
+        SIZE sz;
+        GetTextExtentPoint32W(dc, L"GRAPHICS", 8, &sz); w[0] = sz.cx + 8;
+        GetTextExtentPoint32W(dc, L"CONTROLS", 8, &sz); w[1] = sz.cx + 8;
+        SelectObject(dc, old);
+        ReleaseDC(NULL, dc);
+    }
+    RECT r;
+    r.left = MARGIN + (tab ? w[0] + 30 : 0);
+    r.right = r.left + w[tab];
+    r.top = 28;
+    r.bottom = 80;
+    return r;
+}
+
 /* Scrolling: the most the rows can scroll, and keeping the highlighted row in view. */
 static int smax_scroll(void) {
-    int bottom = S_TOP + S_BACK * (S_ROW_H + S_ROW_GAP) + S_ROW_H + 8;
+    int bottom = S_TOP + back_row() * (S_ROW_H + S_ROW_GAP) + S_ROW_H + 8;
     return bottom > S_VIEW_BOTTOM ? bottom - S_VIEW_BOTTOM : 0;
 }
 
@@ -665,31 +1082,41 @@ static void sscroll_to(int y) {
 }
 
 static void sshow_row(void) {
+    if (g_srow < 0) { sscroll_to(0); return; }
     RECT r = srow_rect(g_srow);
     if (r.top < S_VIEW_TOP + 6) sscroll_to(g_sscroll - (S_VIEW_TOP + 6 - r.top));
     else if (r.bottom > S_VIEW_BOTTOM - 6) sscroll_to(g_sscroll + r.bottom - (S_VIEW_BOTTOM - 6));
 }
 
-static void open_settings(HWND hwnd) {
-    if (g_sel < 0 || g_sel >= g_count) return;
-    g_page = PAGE_SETTINGS;
-    g_srow = 0;
-    while (g_srow < S_BACK && !srow_enabled(g_srow)) g_srow++;
+static void set_tab(HWND hwnd, int tab, int focus_heading) {
+    g_tab = tab;
+    g_capture = -1;
+    g_cmsg[0] = 0;
+    if (tab == TAB_CONTROLS) keys_load(sgame());    /* the game's quick menu can change keys.ini too */
+    g_srow = focus_heading ? -1 : 0;
+    while (g_srow >= 0 && g_srow < back_row() && !srow_enabled(g_srow)) g_srow++;
     g_sscroll = 0;
     sshow_row();
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
+static void open_settings(HWND hwnd) {
+    if (g_sel < 0 || g_sel >= g_count) return;
+    g_page = PAGE_SETTINGS;
+    set_tab(hwnd, TAB_GRAPHICS, 0);
+}
+
 static void close_settings(HWND hwnd) {
     g_page = PAGE_LIST;
     g_col = COL_SETTINGS;
+    g_capture = -1;
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
 static void smove(HWND hwnd, int d) {
-    int r = g_srow;
-    for (int i = 0; i < S_COUNT; i++) {
-        r = (r + d + S_COUNT) % S_COUNT;
+    int n = nrows() + 1, r = g_srow;     /* -1 (the heading) .. nrows()-1, round */
+    for (int i = 0; i < n; i++) {
+        r = (r + 1 + d + n) % n - 1;
         if (srow_enabled(r)) break;
     }
     g_srow = r;
@@ -697,10 +1124,117 @@ static void smove(HWND hwnd, int d) {
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
+/* --- the Controls tab ------------------------------------------------------- */
+
+/* The triggers (bits 0, 1) and the stick directions pushed past about half way (bits 2-9: left stick left, right, up, down,
+ * then the right stick; XInput's up is plus, the game's is minus). */
+static WORD analog_bits(const PadState* p) {
+    const int t = 16000;
+    return (WORD)((p->lt > 100 ? 1 : 0) | (p->rt > 100 ? 2 : 0) | (p->lx < -t ? 4 : 0) | (p->lx > t ? 8 : 0) | (p->ly > t ? 16 : 0) |
+                  (p->ly < -t ? 32 : 0) | (p->rx < -t ? 64 : 0) | (p->rx > t ? 128 : 0) | (p->ry > t ? 256 : 0) | (p->ry < -t ? 512 : 0));
+}
+
+static void capture_start(HWND hwnd, int row) {
+    g_capture = row;
+    g_capture_until = GetTickCount() + 5000;
+    g_capture_pad = 0;
+    g_capture_trig = 0;
+    if (g_xget) {   /* what is already down (the A that chose the row) has to be let go first */
+        for (DWORD i = 0; i < 4; i++) {
+            XState st;
+            if (g_xget(i, &st) != ERROR_SUCCESS) continue;
+            g_capture_pad |= st.pad.buttons;
+            g_capture_trig |= analog_bits(&st.pad);
+        }
+    }
+    g_cmsg[0] = 0;
+    InvalidateRect(hwnd, NULL, FALSE);
+}
+
+static void controls_saved(HWND hwnd, const wchar_t* what) {
+    if (!keys_save(sgame())) {
+        wchar_t p[MAX_PATH];
+        keys_path(sgame(), p);
+        swprintf(g_cmsg, 160, L"Could not write %ls", p);
+    } else {
+        swprintf(g_cmsg, 160, L"%ls", what);
+    }
+    g_capture = -1;
+    InvalidateRect(hwnd, NULL, FALSE);
+}
+
+/* The waiting row gets a key ("Space"), or a controller button ("a"). */
+static void capture_key(HWND hwnd, const char* token) {
+    int i = cbind_index(g_capture);
+    if (i < 0) { g_capture = -1; return; }
+    wchar_t shown[64], what[160];
+    kb_display(token, shown, 64);
+    bind_key(i, token);
+    swprintf(what, 160, L"%ls: %ls", k_binds[i].label, shown);
+    controls_saved(hwnd, what);
+}
+
+static void capture_pad(HWND hwnd, const char* word) {
+    int i = cbind_index(g_capture);
+    if (i < 0) { g_capture = -1; return; }
+    wchar_t what[160];
+    bind_pad(i, word);
+    swprintf(what, 160, L"%ls: %ls", k_binds[i].label, pad_display(word));
+    controls_saved(hwnd, what);
+}
+
+static void clear_binding(HWND hwnd) {
+    int i = cbind_index(g_srow);
+    if (g_tab != TAB_CONTROLS || i < 0) return;
+    wchar_t what[160];
+    if (g_dev == DEV_KEYBOARD) {
+        snprintf(g_kb[i], sizeof g_kb[i], "none");
+        keys_set(k_binds[i].word, "none");
+    } else {
+        char name[48];
+        snprintf(g_pad[i], sizeof g_pad[i], "none");
+        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
+        keys_set(name, "none");
+    }
+    swprintf(what, 160, L"%ls: None", k_binds[i].label);
+    controls_saved(hwnd, what);
+}
+
+static void reset_controls(HWND hwnd) {
+    for (int i = 0; i < BIND_COUNT; i++) {
+        if (g_dev == DEV_KEYBOARD) {
+            snprintf(g_kb[i], sizeof g_kb[i], "%s", k_binds[i].key_default);
+            keys_set(k_binds[i].word, g_kb[i]);
+        } else if (k_binds[i].pad) {
+            char name[48];
+            snprintf(g_pad[i], sizeof g_pad[i], "%s", k_binds[i].pad_default);
+            snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
+            keys_set(name, g_pad[i]);
+        }
+    }
+    controls_saved(hwnd, g_dev == DEV_KEYBOARD ? L"Keyboard controls set back to the defaults" : L"Controller buttons set back to the defaults");
+}
+
 /* Change the highlighted setting: d = -1 / +1 for left / right, 0 to toggle
  * (cycles the resolution). Saved at once. */
 static void schange(HWND hwnd, int d) {
-    if (g_srow == S_BACK) { if (d == 0) close_settings(hwnd); return; }
+    if (g_srow < 0) {   /* the heading: left / right or Enter changes the tab */
+        int t = d == 0 ? !g_tab : d > 0 ? TAB_CONTROLS : TAB_GRAPHICS;
+        if (t != g_tab) set_tab(hwnd, t, 1);
+        return;
+    }
+    if (g_srow == back_row()) { if (d == 0) close_settings(hwnd); return; }
+    if (g_tab == TAB_CONTROLS) {
+        if (g_srow == C_DEVICE) {
+            int k = d == 0 ? !g_dev : d > 0;
+            if (k != g_dev) { sseg_set(NULL, C_DEVICE, k); sscroll_to(0); InvalidateRect(hwnd, NULL, FALSE); }
+        } else if (g_srow == c_reset()) {
+            if (d == 0) reset_controls(hwnd);
+        } else if (d == 0) {
+            capture_start(hwnd, g_srow);
+        }
+        return;
+    }
     if (g_srow == S_DISC) {
         if (d == 0 && choose_disc(hwnd, sgame())) InvalidateRect(hwnd, NULL, FALSE);
         return;
@@ -740,14 +1274,19 @@ static void schange(HWND hwnd, int d) {
     InvalidateRect(hwnd, NULL, FALSE);
 }
 
-static int srow_at(int x, int y) {
+/* The row under a point, -1 for the heading's tabs (*tab says which), -2 for nothing. */
+static int srow_at(int x, int y, int* tab) {
     POINT pt = { x, y };
-    if (y < S_VIEW_TOP || y >= S_VIEW_BOTTOM) return -1;
-    for (int i = 0; i < S_COUNT; i++) {
+    for (int t = 0; t < 2; t++) {
+        RECT r = tab_rect(t);
+        if (PtInRect(&r, pt)) { if (tab) *tab = t; return -1; }
+    }
+    if (y < S_VIEW_TOP || y >= S_VIEW_BOTTOM) return -2;
+    for (int i = 0; i < nrows(); i++) {
         RECT r = srow_rect(i);
         if (PtInRect(&r, pt)) return i;
     }
-    return -1;
+    return -2;
 }
 
 /* --- drawing ---------------------------------------------------------------- */
@@ -858,14 +1397,21 @@ static void paint_settings(HDC mem) {
     RECT rc = { 0, 0, CLIENT_W, CLIENT_H };
     fill_alpha(mem, rc, RGB(0, 0, 0), 185);
 
-    RECT head = { MARGIN, 22, CLIENT_W - MARGIN, 66 };
+    /* The heading: the two tabs. The open one is white and underlined; with the heading highlighted it also gets the red. */
     SelectObject(mem, g_font_head);
-    SetTextColor(mem, WHITE);
-    DrawTextW(mem, L"SETTINGS", -1, &head, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    RECT sub = { MARGIN, 66, CLIENT_W - MARGIN, 90 };
-    SelectObject(mem, g_font_small);
-    SetTextColor(mem, GREY);
-    DrawTextW(mem, g->title, -1, &sub, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    for (int t = 0; t < 2; t++) {
+        RECT r = tab_rect(t);
+        if (t == g_tab && g_srow < 0) {
+            RECT f = { r.left - 8, r.top + 2, r.right + 4, r.bottom - 2 };
+            fill_alpha(mem, f, ACCENT_DIM, 110);
+        }
+        SetTextColor(mem, t == g_tab ? WHITE : DARK_GREY);
+        DrawTextW(mem, t ? L"CONTROLS" : L"GRAPHICS", -1, &r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        if (t == g_tab) {
+            RECT u = { r.left, r.bottom + 2, r.right - 8, r.bottom + 6 };
+            fill_alpha(mem, u, ACCENT, 255);
+        }
+    }
     RECT rule = { 0, 96, CLIENT_W, 99 };
     fill_alpha(mem, rule, ACCENT, 255);
 
@@ -884,13 +1430,13 @@ static void paint_settings(HDC mem) {
 
     int saved = SaveDC(mem);
     IntersectClipRect(mem, 0, S_VIEW_TOP, CLIENT_W, S_VIEW_BOTTOM);
-    for (int i = 0; i < S_COUNT; i++) {
+    for (int i = 0; i < nrows(); i++) {
         int en = srow_enabled(i);
         RECT r = srow_rect(i);
         if (r.bottom <= S_VIEW_TOP || r.top >= S_VIEW_BOTTOM) continue;
-        if (i == S_BACK) {
+        if (i == back_row()) {
             SelectObject(mem, g_font_btn);
-            draw_button(mem, r, L"BACK", g_srow == S_BACK, 1);
+            draw_button(mem, r, L"BACK", g_srow == i, 1);
             continue;
         }
         fill_alpha(mem, r, i == g_srow ? ACCENT_DIM : RGB(0, 0, 0), i == g_srow ? 110 : 80);
@@ -899,23 +1445,48 @@ static void paint_settings(HDC mem) {
             fill_alpha(mem, bar, ACCENT, 255);
         }
         int n = sseg_count(i);
-        int text_right = r.right - 12 - (n ? n * sseg_w(i) + (n - 1) * S_SEG_GAP : i == S_LOOK || i == S_TEXFILTER ? S_LOOK_W : i == S_DISC ? S_DISC_W : S_VAL_W) - 10;
-        /* the name in the middle of the row, or above the credit line */
-        RECT a = { r.left + 18, notes[i] ? r.top + 4 : r.top, text_right, notes[i] ? r.top + 34 : r.bottom };
+        int text_right = r.right - 12 - (n ? n * sseg_w(i) + (n - 1) * S_SEG_GAP : sval_w(i)) - 10;
+        const wchar_t* label;
+        const wchar_t* note = NULL;
+        int bi = g_tab == TAB_CONTROLS ? cbind_index(i) : -1;
+        if (g_tab == TAB_GRAPHICS) label = labels[i], note = notes[i];
+        else if (i == C_DEVICE) label = L"Device";
+        else if (i == c_reset()) label = L"Reset to Defaults";
+        else label = k_binds[bi].label;
+        /* the name in the middle of the row, or above the line under it */
+        RECT a = { r.left + 18, note ? r.top + 4 : r.top, text_right, note ? r.top + 34 : r.bottom };
         SelectObject(mem, g_font_item);
         SetTextColor(mem, en ? WHITE : DARK_GREY);
-        DrawTextW(mem, labels[i], -1, &a, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
-        if (notes[i]) {
+        DrawTextW(mem, label, -1, &a, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+        if (note) {
             RECT s = { r.left + 18, r.top + 35, text_right, r.bottom - 4 };
             SelectObject(mem, g_font_small);
             SetTextColor(mem, en ? GREY : DARK_GREY);
-            DrawTextW(mem, notes[i], -1, &s, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            DrawTextW(mem, note, -1, &s, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
         }
 
         SelectObject(mem, g_font_btn);
         if (n) {
             int v = sseg_value(o, i);
             for (int k = 0; k < n; k++) draw_value(mem, sseg_rect(i, k), sseg_text(i, k), v == k, en);
+        } else if (g_tab == TAB_CONTROLS) {
+            if (i == c_reset()) {
+                draw_value(mem, sval_rect(i), L"RESET", 0, 1);
+            } else if (i == g_capture) {
+                draw_value(mem, sval_rect(i), g_dev == DEV_KEYBOARD ? L"Press a key..." : L"Press an input...", 1, 1);
+            } else if (g_dev == DEV_KEYBOARD) {
+                wchar_t keys[200];
+                kb_display(g_kb[bi], keys, 200);
+                SelectObject(mem, wcslen(keys) > 16 ? g_font_small : g_font_btn);
+                RECT v = sval_rect(i);
+                fill_alpha(mem, v, RGB(0, 0, 0), 110);
+                frame_rect(mem, v, ACCENT);
+                SetTextColor(mem, WHITE);
+                RECT t = { v.left + 6, v.top, v.right - 6, v.bottom };
+                DrawTextW(mem, keys, -1, &t, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            } else {
+                draw_value(mem, sval_rect(i), pad_display(g_pad[bi]), 0, 1);
+            }
         } else if (i == S_LOOK) {
             draw_value(mem, sval_rect(i), k_look_names[o->look], 0, 1);
         } else if (i == S_DISC) {
@@ -941,9 +1512,64 @@ static void paint_settings(HDC mem) {
     RECT strip = { 0, CLIENT_H - 50, CLIENT_W, CLIENT_H };
     fill_alpha(mem, strip, RGB(0, 0, 0), 140);
     SelectObject(mem, g_font_small);
-    SetTextColor(mem, GREY);
-    DrawTextW(mem, L"Arrows to choose   Enter or A to change   Esc or B back",
-              -1, &h, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+    SetTextColor(mem, g_cmsg[0] && g_capture < 0 ? WHITE : GREY);
+    const wchar_t* hint = L"Arrows choose   Enter/A change   LB/RB tabs   Esc/B back";
+    if (g_capture >= 0)
+        hint = g_dev == DEV_KEYBOARD ? L"Press the key or mouse button for it (wait 5 seconds to cancel)"
+                                     : L"Press a button, pull a trigger or push a stick (Esc or wait 5 s to cancel)";
+    else if (g_cmsg[0]) hint = g_cmsg;
+    else if (g_tab == TAB_CONTROLS && cbind_index(g_srow) >= 0)
+        hint = L"Enter/A rebind   Del/Y clear   LB/RB tabs   Esc/B back";
+    DrawTextW(mem, hint, -1, &h, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+}
+
+/* "--render <tab> <device> <row> <file.bmp>": draws the settings page (tab 0 Graphics, 1 Controls; device 0 controller,
+ * 1 keyboard; row -1 the heading) of the first game into a picture without opening a window, to check the layout. */
+static int render_to_file(int tab, int dev, int row, const wchar_t* file) {
+    if (!g_count) return 1;
+    g_sel = 0;
+    g_games[0].cover = load_cover(g_games[0].id);
+    g_bg_from = g_bg_to = 0;
+    g_page = PAGE_SETTINGS;
+    g_dev = dev;
+    g_tab = tab;
+    if (tab == TAB_CONTROLS) keys_load(&g_games[0]);
+    g_srow = row;
+    sshow_row();
+    HDC screen = GetDC(NULL);
+    HDC mem = CreateCompatibleDC(screen);
+    BITMAPINFO bi = { 0 };
+    bi.bmiHeader.biSize = sizeof bi.bmiHeader;
+    bi.bmiHeader.biWidth = CLIENT_W;
+    bi.bmiHeader.biHeight = CLIENT_H;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    void* bits = NULL;
+    HBITMAP bmp = CreateDIBSection(screen, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HGDIOBJ old = SelectObject(mem, bmp);
+    RECT rc = { 0, 0, CLIENT_W, CLIENT_H };
+    HBRUSH black = CreateSolidBrush(RGB(0, 0, 0));
+    FillRect(mem, &rc, black);
+    DeleteObject(black);
+    blit_cover(mem, 0, 255);
+    SetBkMode(mem, TRANSPARENT);
+    paint_settings(mem);
+    GdiFlush();
+    BITMAPFILEHEADER fh = { 0x4D42, 0, 0, 0, sizeof fh + sizeof bi.bmiHeader };
+    DWORD size = CLIENT_W * CLIENT_H * 4;
+    fh.bfSize = fh.bfOffBits + size;
+    FILE* f = _wfopen(file, L"wb");
+    if (f) {
+        fwrite(&fh, sizeof fh, 1, f);
+        fwrite(&bi.bmiHeader, sizeof bi.bmiHeader, 1, f);
+        fwrite(bits, size, 1, f);
+        fclose(f);
+    }
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(NULL, screen);
+    return f ? 0 : 1;
 }
 
 static void paint(HWND hwnd) {
@@ -1037,14 +1663,34 @@ static void activate(HWND hwnd) {
     else launch(hwnd);
 }
 
-static void key(HWND hwnd, WPARAM vk) {
+static void key(HWND hwnd, WPARAM vk, LPARAM lp) {
     if (g_page == PAGE_SETTINGS) {
+        if (g_capture >= 0) {   /* the waiting row takes the key, Esc included (a controller row: Esc cancels) */
+            if (g_dev == DEV_CONTROLLER) {
+                if (vk == VK_ESCAPE) { g_capture = -1; InvalidateRect(hwnd, NULL, FALSE); }
+                return;
+            }
+            const char* token = vk_token(vk, lp);
+            if (!token) {
+                swprintf(g_cmsg, 160, L"That key belongs to the game window (F1, F2, F5, F8, F9, F11): press another");
+                MessageBeep(MB_ICONWARNING);
+                InvalidateRect(hwnd, NULL, FALSE);
+                return;
+            }
+            capture_key(hwnd, token);
+            return;
+        }
+        g_cmsg[0] = 0;
         if (vk == VK_UP) smove(hwnd, -1);
         else if (vk == VK_DOWN || vk == VK_TAB) smove(hwnd, 1);
         else if (vk == VK_LEFT) schange(hwnd, -1);
         else if (vk == VK_RIGHT) schange(hwnd, 1);
         else if (vk == VK_RETURN || vk == VK_SPACE) schange(hwnd, 0);
+        else if (vk == VK_DELETE) clear_binding(hwnd);
+        else if (vk == VK_PRIOR) set_tab(hwnd, TAB_GRAPHICS, g_srow < 0);
+        else if (vk == VK_NEXT) set_tab(hwnd, TAB_CONTROLS, g_srow < 0);
         else if (vk == VK_ESCAPE || vk == VK_BACK) close_settings(hwnd);
+        InvalidateRect(hwnd, NULL, FALSE);
         return;
     }
     if (vk == VK_UP) move_sel(hwnd, -1);
@@ -1054,6 +1700,25 @@ static void key(HWND hwnd, WPARAM vk) {
     else if (vk == VK_TAB) set_col(hwnd, !g_col);
     else if (vk == VK_RETURN || vk == VK_SPACE) activate(hwnd);
     else if (vk == VK_ESCAPE) DestroyWindow(hwnd);
+}
+
+/* While a controller row waits: the first button (or trigger) pressed after the wait began. */
+static void capture_from_pad(HWND hwnd, WORD now, WORD trig) {
+    static const struct { WORD bit; const char* word; } bits[] = {
+        { 0x0001, "dpup" }, { 0x0002, "dpdown" }, { 0x0004, "dpleft" }, { 0x0008, "dpright" }, { 0x0010, "start" }, { 0x0020, "back" },
+        { 0x0040, "leftstick" }, { 0x0080, "rightstick" }, { 0x0100, "leftshoulder" }, { 0x0200, "rightshoulder" },
+        { 0x1000, "a" }, { 0x2000, "b" }, { 0x4000, "x" }, { 0x8000, "y" },
+    };
+    g_capture_pad &= now;       /* let go: from now on it counts */
+    g_capture_trig &= trig;
+    WORD fresh = now & ~g_capture_pad;
+    WORD tfresh = trig & ~g_capture_trig;
+    static const char* analog[10] = { "lefttrigger", "righttrigger", "leftstick_left", "leftstick_right", "leftstick_up", "leftstick_down",
+                                      "rightstick_left", "rightstick_right", "rightstick_up", "rightstick_down" };
+    for (int i = 0; i < 10; i++)
+        if (tfresh & (1 << i)) { capture_pad(hwnd, analog[i]); return; }
+    for (size_t i = 0; i < sizeof bits / sizeof bits[0]; i++)
+        if (fresh & bits[i].bit) { capture_pad(hwnd, bits[i].word); return; }
 }
 
 static void tick(HWND hwnd) {
@@ -1071,26 +1736,45 @@ static void tick(HWND hwnd) {
         if (g_fade >= 255) { g_fade = 255; g_bg_from = g_bg_to; }
         InvalidateRect(hwnd, NULL, FALSE);
     }
+    if (g_capture >= 0 && (LONG)(GetTickCount() - g_capture_until) > 0) {
+        g_capture = -1;
+        InvalidateRect(hwnd, NULL, FALSE);
+    }
     if (!g_xget || GetForegroundWindow() != hwnd) return;
-    WORD now = 0;
+    WORD now = 0, trig = 0;
     for (DWORD i = 0; i < 4; i++) {
         XState st;
-        if (g_xget(i, &st) == ERROR_SUCCESS) now |= st.pad.buttons;
+        if (g_xget(i, &st) != ERROR_SUCCESS) continue;
+        now |= st.pad.buttons;
+        trig |= analog_bits(&st.pad);
     }
     WORD pressed = now & ~g_pad_prev;
     g_pad_prev = now;
-    if (pressed & 0x0001) key(hwnd, VK_UP);       /* D-pad up */
-    if (pressed & 0x0002) key(hwnd, VK_DOWN);     /* D-pad down */
-    if (pressed & 0x0004) key(hwnd, VK_LEFT);     /* D-pad left */
-    if (pressed & 0x0008) key(hwnd, VK_RIGHT);    /* D-pad right */
-    if (pressed & 0x1000) key(hwnd, VK_RETURN);   /* A */
-    if (pressed & 0x2000) key(hwnd, VK_ESCAPE);   /* B: back, or quit on the list */
+    if (g_capture >= 0) {
+        if (g_dev == DEV_CONTROLLER) capture_from_pad(hwnd, now, trig);
+        else if (pressed & 0x2000) { g_capture = -1; InvalidateRect(hwnd, NULL, FALSE); }   /* B cancels a keyboard row */
+        return;
+    }
+    if (pressed & 0x0001) key(hwnd, VK_UP, 0);       /* D-pad up */
+    if (pressed & 0x0002) key(hwnd, VK_DOWN, 0);     /* D-pad down */
+    if (pressed & 0x0004) key(hwnd, VK_LEFT, 0);     /* D-pad left */
+    if (pressed & 0x0008) key(hwnd, VK_RIGHT, 0);    /* D-pad right */
+    if (pressed & 0x1000) key(hwnd, VK_RETURN, 0);   /* A */
+    if (pressed & 0x2000) key(hwnd, VK_ESCAPE, 0);   /* B: back, or quit on the list */
+    if (g_page == PAGE_SETTINGS) {
+        if (pressed & 0x8000) key(hwnd, VK_DELETE, 0);   /* Y: clear a binding */
+        if (pressed & 0x0100) key(hwnd, VK_PRIOR, 0);    /* LB: the Graphics tab */
+        if (pressed & 0x0200) key(hwnd, VK_NEXT, 0);     /* RB: the Controls tab */
+    }
 }
 
 static void mouse_move(HWND hwnd, int x, int y) {
     if (g_page == PAGE_SETTINGS) {
-        int r = srow_at(x, y);
-        if (r >= 0 && r != g_srow && srow_enabled(r)) {
+        int tab = 0, r = srow_at(x, y, &tab);
+        if (g_capture >= 0) return;
+        if (r == -1) {
+            if (tab == g_tab && g_srow != -1) { g_srow = -1; InvalidateRect(hwnd, NULL, FALSE); }
+        } else if (r >= 0 && r != g_srow && srow_enabled(r)) {
             g_srow = r;
             InvalidateRect(hwnd, NULL, FALSE);
         }
@@ -1101,9 +1785,21 @@ static void mouse_move(HWND hwnd, int x, int y) {
     if (button_at(x, y, &brow, &col) && col != g_col) set_col(hwnd, col);
 }
 
+/* A mouse button pressed while a keyboard row waits: that row gets the mouse button. Returns 1 when it was taken. */
+static int mouse_capture(HWND hwnd, const char* token) {
+    if (g_page != PAGE_SETTINGS || g_capture < 0 || g_dev != DEV_KEYBOARD) return 0;
+    capture_key(hwnd, token);
+    g_ignore_up = 1;
+    return 1;
+}
+
 static void mouse_click(HWND hwnd, int x, int y) {
+    if (g_ignore_up) { g_ignore_up = 0; return; }
     if (g_page == PAGE_SETTINGS) {
-        int r = srow_at(x, y);
+        if (g_capture >= 0) return;
+        int tab = 0, r = srow_at(x, y, &tab);
+        g_cmsg[0] = 0;
+        if (r == -1) { set_tab(hwnd, tab, 1); return; }
         if (r < 0) return;
         g_srow = r;
         if (sseg_count(r) && srow_enabled(r)) {
@@ -1112,7 +1808,8 @@ static void mouse_click(HWND hwnd, int x, int y) {
                 RECT s = sseg_rect(r, k);
                 if (PtInRect(&s, pt)) {
                     sseg_set(&sgame()->o, r, k);
-                    save_options(sgame());
+                    if (g_tab == TAB_GRAPHICS) save_options(sgame());
+                    else sscroll_to(g_sscroll);
                     InvalidateRect(hwnd, NULL, FALSE);
                     return;
                 }
@@ -1134,7 +1831,20 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_PAINT: paint(hwnd); return 0;
     case WM_ERASEBKGND: return 1;
     case WM_TIMER: tick(hwnd); return 0;
-    case WM_KEYDOWN: key(hwnd, wp); return 0;
+    case WM_KEYDOWN:
+        if (g_capture >= 0 && (lp & (1 << 30))) return 0;   /* a held key repeating (the Enter that chose the row) */
+        key(hwnd, wp, lp);
+        return 0;
+    case WM_SYSKEYDOWN:     /* Alt and F10: only a waiting keyboard row takes them */
+        if (g_page == PAGE_SETTINGS && g_capture >= 0 && g_dev == DEV_KEYBOARD) {
+            if (!(lp & (1 << 30))) key(hwnd, wp, lp);
+            return 0;
+        }
+        break;
+    case WM_LBUTTONDOWN: mouse_capture(hwnd, "Left Mouse"); return 0;
+    case WM_RBUTTONDOWN: mouse_capture(hwnd, "Right Mouse"); return 0;
+    case WM_MBUTTONDOWN: mouse_capture(hwnd, "Middle Mouse"); return 0;
+    case WM_XBUTTONDOWN: mouse_capture(hwnd, HIWORD(wp) == XBUTTON1 ? "Mouse X1" : "Mouse X2"); return TRUE;
     case WM_SIZING: keep_aspect(hwnd, wp, (RECT*)lp); return TRUE;
     case WM_SIZE: InvalidateRect(hwnd, NULL, FALSE); return 0;
     case WM_MOUSEMOVE: {
@@ -1144,7 +1854,9 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_MOUSEWHEEL:
-        if (g_page == PAGE_SETTINGS) {
+        if (g_page == PAGE_SETTINGS && mouse_capture(hwnd, (short)HIWORD(wp) > 0 ? "Wheel Up" : "Wheel Down")) {
+            g_ignore_up = 0;
+        } else if (g_page == PAGE_SETTINGS) {
             sscroll_to(g_sscroll - (short)HIWORD(wp) * S_WHEEL_STEP / WHEEL_DELTA);
             InvalidateRect(hwnd, NULL, FALSE);
         }
@@ -1196,6 +1908,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
     g_font_set = CreateFontW(-23, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
     g_font_btn = CreateFontW(-19, 0, 0, 0, FW_NORMAL, FALSE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
     g_font_small = CreateFontW(-15, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Segoe UI");
+
+    if (argv && argc >= 6 && _wcsicmp(argv[1], L"--render") == 0)
+        return render_to_file(_wtoi(argv[2]), _wtoi(argv[3]), _wtoi(argv[4]), argv[5]);
 
     WNDCLASSW wc = { 0 };
     wc.lpfnWndProc = wndproc;

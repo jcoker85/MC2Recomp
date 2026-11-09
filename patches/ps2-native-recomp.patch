@@ -1,8 +1,112 @@
 diff --git a/host/keymap.cpp b/host/keymap.cpp
-index ea997e0..10b3bdc 100644
+index ea997e0..fb7ad36 100644
 --- a/host/keymap.cpp
 +++ b/host/keymap.cpp
-@@ -270,8 +270,8 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
+@@ -169,25 +169,82 @@ Config defaults() {
+     set(DpadUp, {SDL_SCANCODE_UP}), set(DpadDown, {SDL_SCANCODE_DOWN}), set(DpadLeft, {SDL_SCANCODE_LEFT}), set(DpadRight, {SDL_SCANCODE_RIGHT});
+     set(LeftUp, {SDL_SCANCODE_W}), set(LeftDown, {SDL_SCANCODE_S}), set(LeftLeft, {SDL_SCANCODE_A}), set(LeftRight, {SDL_SCANCODE_D});
+     set(RightUp, {SDL_SCANCODE_I}), set(RightDown, {SDL_SCANCODE_K}), set(RightLeft, {SDL_SCANCODE_J}), set(RightRight, {SDL_SCANCODE_L});
+-    set(Cross, {SDL_SCANCODE_SPACE, SDL_SCANCODE_RETURN, SDL_SCANCODE_KP_ENTER});
+-    set(Circle, {SDL_SCANCODE_E, kMouseMiddle});
+-    set(Square, {kMouseLeft});
+-    set(Triangle, {kMouseRight});
+-    set(L1, {SDL_SCANCODE_LSHIFT, kMouseX2});
+-    set(R1, {SDL_SCANCODE_F});
+-    set(L2, {SDL_SCANCODE_Q});
+-    set(R2, {SDL_SCANCODE_R});
+-    set(L3, {SDL_SCANCODE_X});
+-    set(R3, {SDL_SCANCODE_C});
+-    set(Start, {SDL_SCANCODE_ESCAPE});
+-    set(Select, {SDL_SCANCODE_TAB, SDL_SCANCODE_BACKSPACE});
++    // MC2Recomp: the buttons on the keys the project's author chose (Z X C V / B N M Comma along the bottom row)
++    set(Cross, {SDL_SCANCODE_X});
++    set(Circle, {SDL_SCANCODE_C});
++    set(Square, {SDL_SCANCODE_Z});
++    set(Triangle, {SDL_SCANCODE_V});
++    set(L1, {SDL_SCANCODE_B});
++    set(R1, {SDL_SCANCODE_N});
++    set(L2, {SDL_SCANCODE_M});
++    set(R2, {SDL_SCANCODE_COMMA});
++    set(L3, {SDL_SCANCODE_LALT});
++    set(R3, {SDL_SCANCODE_SPACE});
++    set(Start, {SDL_SCANCODE_RETURN});
++    set(Select, {SDL_SCANCODE_TAB});
+     set(Roll, {SDL_SCANCODE_LCTRL, kMouseX1});
+-    set(Rage, {SDL_SCANCODE_V});
++    set(Rage, {});
++    for (int &p : c.pad) p = kPadNone;
++    c.pad[DpadUp] = SDL_CONTROLLER_BUTTON_DPAD_UP, c.pad[DpadDown] = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
++    c.pad[DpadLeft] = SDL_CONTROLLER_BUTTON_DPAD_LEFT, c.pad[DpadRight] = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
++    c.pad[Cross] = SDL_CONTROLLER_BUTTON_A, c.pad[Circle] = SDL_CONTROLLER_BUTTON_B;
++    c.pad[Square] = SDL_CONTROLLER_BUTTON_X, c.pad[Triangle] = SDL_CONTROLLER_BUTTON_Y;
++    c.pad[L1] = SDL_CONTROLLER_BUTTON_LEFTSHOULDER, c.pad[R1] = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
++    c.pad[L2] = kPadLeftTrigger, c.pad[R2] = kPadRightTrigger;
++    c.pad[L3] = SDL_CONTROLLER_BUTTON_LEFTSTICK, c.pad[R3] = SDL_CONTROLLER_BUTTON_RIGHTSTICK;
++    c.pad[Start] = SDL_CONTROLLER_BUTTON_START, c.pad[Select] = SDL_CONTROLLER_BUTTON_BACK;
++    c.pad[LeftLeft] = kPadStickBase + 0, c.pad[LeftRight] = kPadStickBase + 1, c.pad[LeftUp] = kPadStickBase + 2, c.pad[LeftDown] = kPadStickBase + 3;
++    c.pad[RightLeft] = kPadStickBase + 4, c.pad[RightRight] = kPadStickBase + 5, c.pad[RightUp] = kPadStickBase + 6, c.pad[RightDown] = kPadStickBase + 7;
+     set(Help, {});  // H used to be the key card; it was easy to hit by mistake, F1 opens the quick menu now
+     set(Menu, {});
+     return c;
+ }
+ 
++bool is_pad_action(int action) {
++    return action >= DpadUp && action <= Select;
++}
++
++namespace {
++// the words of the stick directions, in the order of kPadStickBase + 0..7
++const char *const kStickWords[8] = {"leftstick_left", "leftstick_right", "leftstick_up", "leftstick_down",
++                                    "rightstick_left", "rightstick_right", "rightstick_up", "rightstick_down"};
++}  // namespace
++
++std::string pad_input_word(int pad_input) {
++    if (pad_input == kPadLeftTrigger) return "lefttrigger";
++    if (pad_input == kPadRightTrigger) return "righttrigger";
++    if (pad_input >= kPadStickBase && pad_input < kPadStickBase + 8) return kStickWords[pad_input - kPadStickBase];
++    if (pad_input >= 0 && pad_input < SDL_CONTROLLER_BUTTON_MAX) {
++        const char *name = SDL_GameControllerGetStringForButton(static_cast<SDL_GameControllerButton>(pad_input));
++        if (name && *name) return name;
++    }
++    return "none";
++}
++
++namespace {
++// 'pad_cross = a': SDL's controller button names (a, b, x, y, back, start, guide, leftstick, rightstick, leftshoulder,
++// rightshoulder, dpup, dpdown, dpleft, dpright, misc1, paddle1 to paddle4, touchpad), the two triggers, and a few short names
++bool lookup_pad(const std::string &text, int &pad_input) {
++    const std::string v = squash(text);
++    if (v == "none" || v.empty()) return pad_input = kPadNone, true;
++    if (v == "lefttrigger" || v == "lt" || v == "l2" || v == "zl") return pad_input = kPadLeftTrigger, true;
++    if (v == "righttrigger" || v == "rt" || v == "r2" || v == "zr") return pad_input = kPadRightTrigger, true;
++    for (int i = 0; i < 8; ++i)
++        if (v == squash(kStickWords[i])) return pad_input = kPadStickBase + i, true;
++    static const std::map<std::string, int> shorts = {
++        {"lb", SDL_CONTROLLER_BUTTON_LEFTSHOULDER}, {"rb", SDL_CONTROLLER_BUTTON_RIGHTSHOULDER}, {"l1", SDL_CONTROLLER_BUTTON_LEFTSHOULDER},
++        {"r1", SDL_CONTROLLER_BUTTON_RIGHTSHOULDER}, {"ls", SDL_CONTROLLER_BUTTON_LEFTSTICK}, {"rs", SDL_CONTROLLER_BUTTON_RIGHTSTICK},
++        {"l3", SDL_CONTROLLER_BUTTON_LEFTSTICK}, {"r3", SDL_CONTROLLER_BUTTON_RIGHTSTICK}, {"view", SDL_CONTROLLER_BUTTON_BACK},
++        {"select", SDL_CONTROLLER_BUTTON_BACK}, {"menu", SDL_CONTROLLER_BUTTON_START}, {"dpadup", SDL_CONTROLLER_BUTTON_DPAD_UP},
++        {"dpaddown", SDL_CONTROLLER_BUTTON_DPAD_DOWN}, {"dpadleft", SDL_CONTROLLER_BUTTON_DPAD_LEFT}, {"dpadright", SDL_CONTROLLER_BUTTON_DPAD_RIGHT}};
++    if (const auto it = shorts.find(v); it != shorts.end()) return pad_input = it->second, true;
++    const SDL_GameControllerButton b = SDL_GameControllerGetButtonFromString(v.c_str());
++    if (b == SDL_CONTROLLER_BUTTON_INVALID) return false;
++    pad_input = b;
++    return true;
++}
++}  // namespace
++
+ std::string input_name(int input) {
+     switch (input) {
+     case kMouseLeft: return "Left Mouse";
+@@ -200,6 +257,7 @@ std::string input_name(int input) {
+     case SDL_SCANCODE_RETURN: return "Enter";
+     case SDL_SCANCODE_ESCAPE: return "Esc";
+     case SDL_SCANCODE_KP_ENTER: return "Keypad Enter";
++    case SDL_SCANCODE_COMMA: return "Comma";  // "," would split the key list in keys.ini
+     default: break;
+     }
+     if (input > 0 && input < kScancodes) {
+@@ -270,8 +328,8 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
          }
          if (name == "scale") {
              const std::string v = squash(value);
@@ -13,11 +117,175 @@ index ea997e0..10b3bdc 100644
              continue;
          }
          if (name == "mousespeed") {
+@@ -281,6 +339,14 @@ void parse(const std::string &text, Config &config, std::vector<std::string> &pr
+             else config.mouse_speed = v;
+             continue;
+         }
++        if (name_with_underscore.compare(0, 4, "pad_") == 0) {
++            const auto pa = actions.find(name_with_underscore.substr(4));
++            int pad_input = kPadNone;
++            if (pa == actions.end() || !is_pad_action(pa->second)) bad("unknown controller button line '" + trim(line.substr(0, eq)) + "', ignored");
++            else if (!lookup_pad(value, pad_input)) bad("'" + value + "' is not a controller button (a, b, x, y, leftshoulder, lefttrigger, back, start, dpup, ...), ignored");
++            else config.pad[pa->second] = pad_input;
++            continue;
++        }
+         auto it = actions.find(name_with_underscore);
+         if (it == actions.end()) it = actions.find(name);
+         if (it == actions.end()) {
+@@ -347,6 +413,14 @@ std::string default_file_text() {
+         if (kInfo[a].comment[0]) t += std::string(a ? "\n" : "") + "# " + kInfo[a].comment + "\n";
+         t += std::string(kInfo[a].name) + std::string(12 - std::min<std::size_t>(11, std::strlen(kInfo[a].name)), ' ') + "= " + list(c, a) + "\n";
+     }
++    t +=
++        "\n# The game controller: which of its inputs works each console button and each direction of the two sticks. Names:\n"
++        "# a, b, x, y (the four on the right, by their place: a is the bottom one), leftshoulder, rightshoulder, lefttrigger,\n"
++        "# righttrigger, leftstick, rightstick (pressed in), back, start, dpup, dpdown, dpleft, dpright, a stick direction\n"
++        "# (leftstick_left, leftstick_right, leftstick_up, leftstick_down, the same for rightstick), or none. A trigger or a stick\n"
++        "# direction stays analog on a stick: pad_right_up = righttrigger gives a pedal. Back and then Start opens the quick menu.\n";
++    for (int a = 0; a < ActionCount; ++a)
++        if (is_pad_action(a)) t += std::string("pad_") + kInfo[a].name + " = " + pad_input_word(c.pad[a]) + "\n";
+     t +=
+         "\n# The mouse can also push a stick (off, left or right). Off: the mouse only clicks. On: the pointer is locked in the window\n"
+         "# and moving the mouse pushes that stick; mouse_speed is how far (1 is a good start). mouse_invert turns a direction\n"
+diff --git a/host/keymap.hpp b/host/keymap.hpp
+index 3d53298..9088c70 100644
+--- a/host/keymap.hpp
++++ b/host/keymap.hpp
+@@ -35,8 +35,18 @@ struct Config {
+     double mouse_deadzone = 0; // 0 to 0.9: how far the stick jumps out as soon as the mouse moves
+     int look = -1;             // the picture look (F2) written in keys.ini, -1 when the file has no 'look' line
+     int scale = 0;             // the inner resolution (1 to 3 times the console's) used at the next start, 0 when the file has no 'scale' line
++    // The game controller: which of its inputs works each console button and each direction of the console's two sticks (keys.ini
++    // 'pad_cross = a', 'pad_right_up = righttrigger' and so on). A value is an SDL_GameControllerButton, kPadLeftTrigger /
++    // kPadRightTrigger, a stick direction (kPadStickBase + axis * 2 + 1 for the plus side), or kPadNone. Analog inputs (stick
++    // directions, triggers) stay analog on a stick direction; on a button they press it past half way.
++    int pad[ActionCount] = {};
+ };
+ 
++constexpr int kPadNone = -1, kPadLeftTrigger = 100, kPadRightTrigger = 101;
++constexpr int kPadStickBase = 110;           // + SDL_GameControllerAxis (LEFTX..RIGHTY) * 2, + 1 for right / down
++bool is_pad_action(int action);              // the 16 console buttons and 8 stick directions a controller input can be given to
++std::string pad_input_word(int pad_input);   // "a", "leftshoulder", "lefttrigger", "none": the word written in keys.ini
++
+ // The picture looks the F2 key goes through. The number is also the video option bits (ps2/video.hpp): bit 0 smooth edges, bit 1 soft, bit 2 sharp (look 4: cubic enlargement + light sharpening; look 5 = sharp + smooth edges).
+ constexpr int kLookCount = 6;
+ constexpr int kDefaultLook = 5;
 diff --git a/host/window.cpp b/host/window.cpp
-index 6c7c2dc..c78beaf 100644
+index 6c7c2dc..662c930 100644
 --- a/host/window.cpp
 +++ b/host/window.cpp
-@@ -1078,7 +1078,7 @@ void menu_command(quickmenu::Command c, int step) {
+@@ -63,19 +63,18 @@ enum Button : std::uint16_t {
+     kTriangle = 1u << 12, kCircle = 1u << 13, kCross = 1u << 14, kSquare = 1u << 15,
+ };
+ 
++// The console buttons a controller button works; which one is in keys.ini ('pad_cross = a', keymap::Config::pad; the defaults are
++// A Cross, B Circle, X Square, Y Triangle, the shoulders L1/R1, the triggers L2/R2, the sticks pressed in L3/R3, Back Select, Start).
+ struct PadBinding {
+-    SDL_GameControllerButton button;
++    int action;  // keymap::Action
+     std::uint16_t mask;
+ };
+ 
+ constexpr PadBinding kPadButtons[] = {
+-    {SDL_CONTROLLER_BUTTON_A, kCross},          {SDL_CONTROLLER_BUTTON_B, kCircle},
+-    {SDL_CONTROLLER_BUTTON_X, kSquare},         {SDL_CONTROLLER_BUTTON_Y, kTriangle},
+-    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, kL1},  {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, kR1},
+-    {SDL_CONTROLLER_BUTTON_LEFTSTICK, kL3},     {SDL_CONTROLLER_BUTTON_RIGHTSTICK, kR3},
+-    {SDL_CONTROLLER_BUTTON_BACK, kSelect},      {SDL_CONTROLLER_BUTTON_START, kStart},
+-    {SDL_CONTROLLER_BUTTON_DPAD_UP, kUp},       {SDL_CONTROLLER_BUTTON_DPAD_DOWN, kDown},
+-    {SDL_CONTROLLER_BUTTON_DPAD_LEFT, kLeft},   {SDL_CONTROLLER_BUTTON_DPAD_RIGHT, kRight},
++    {keymap::Cross, kCross}, {keymap::Circle, kCircle}, {keymap::Square, kSquare}, {keymap::Triangle, kTriangle},
++    {keymap::L1, kL1},       {keymap::R1, kR1},         {keymap::L2, kL2},         {keymap::R2, kR2},
++    {keymap::L3, kL3},       {keymap::R3, kR3},         {keymap::Select, kSelect}, {keymap::Start, kStart},
++    {keymap::DpadUp, kUp},   {keymap::DpadDown, kDown}, {keymap::DpadLeft, kLeft}, {keymap::DpadRight, kRight},
+ };
+ 
+ SDL_Window *g_window = nullptr;
+@@ -239,6 +238,19 @@ std::uint8_t axis(SDL_GameController *pad, SDL_GameControllerAxis a) {
+     return static_cast<std::uint8_t>(std::clamp((v + 32768) >> 8, 0, 255));
+ }
+ 
++// How far a controller input is pushed, 0 to 1: a button 0 or 1, a trigger, or one side of a stick axis (keymap kPadStickBase)
++double pad_amount(SDL_GameController *pad, int source) {
++    if (source == keymap::kPadLeftTrigger || source == keymap::kPadRightTrigger)
++        return SDL_GameControllerGetAxis(pad, source == keymap::kPadLeftTrigger ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0;
++    if (source >= keymap::kPadStickBase && source < keymap::kPadStickBase + 8) {
++        const int k = source - keymap::kPadStickBase;
++        const int v = SDL_GameControllerGetAxis(pad, static_cast<SDL_GameControllerAxis>(k / 2));
++        return std::clamp((k % 2 ? v : -v) / 32767.0, 0.0, 1.0);
++    }
++    if (source >= 0 && source < SDL_CONTROLLER_BUTTON_MAX) return SDL_GameControllerGetButton(pad, static_cast<SDL_GameControllerButton>(source)) ? 1.0 : 0.0;
++    return 0.0;
++}
++
+ void rumble(int port) {
+     static double last_strong[2] = {};
+     static bool last_weak[2] = {};
+@@ -763,8 +775,6 @@ void poll_port(int port) {
+     std::uint8_t lx = 0x80, ly = 0x80, rx = 0x80, ry = 0x80;
+     if (port == 0) read_keyboard(pressed, lx, ly, rx, ry);
+     if (pad) {
+-        for (const PadBinding &b : kPadButtons)
+-            if (b.button != SDL_CONTROLLER_BUTTON_BACK && SDL_GameControllerGetButton(pad, b.button)) pressed |= b.mask;
+         // Select, then Start opens the quick menu, and the game must get neither. So the game gets this Select late: once it has been
+         // held for 300 ms without Start, or as a short press when it is let go without Start. (Start first and then Select would
+         // already have reached the game: the way is Select first.) A Select of the keyboard (Tab) is not held back.
+@@ -782,20 +792,41 @@ void poll_port(int port) {
+             select_since[port] = 0;
+             select_combo[port] = false;
+         }
+-        if (select_to_game || static_cast<Sint32>(select_tap_until[port] - now) > 0) pressed |= kSelect;
+-        if (sel && st) pressed &= ~kStart;
+-        const auto trigger = [&](SDL_GameControllerAxis a, std::uint16_t bit, std::uint8_t &pressure) {
+-            const int v = SDL_GameControllerGetAxis(pad, a);
+-            if (v <= 2000 || (pressed & bit)) return;
+-            pressed |= bit;
+-            pressure = static_cast<std::uint8_t>(std::max(1, v * 255 / 32767));
++        const bool back_to_game = select_to_game || static_cast<Sint32>(select_tap_until[port] - now) > 0;
++        // every console button from the controller button keys.ini gives it: Back as held back above, Start not while it opens the
++        // menu, a trigger past a small dead zone (L2 and R2 also get how far it is pulled)
++        for (const PadBinding &b : kPadButtons) {
++            const int source = g_keys.pad[b.action];
++            if (source == keymap::kPadLeftTrigger || source == keymap::kPadRightTrigger) {
++                const int v = SDL_GameControllerGetAxis(pad, source == keymap::kPadLeftTrigger ? SDL_CONTROLLER_AXIS_TRIGGERLEFT : SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
++                if (v <= 2000 || (pressed & b.mask)) continue;
++                pressed |= b.mask;
++                const std::uint8_t pressure = static_cast<std::uint8_t>(std::max(1, v * 255 / 32767));
++                if (b.mask == kL2) l2 = pressure;
++                if (b.mask == kR2) r2 = pressure;
++            } else if (source == SDL_CONTROLLER_BUTTON_BACK) {
++                if (back_to_game) pressed |= b.mask;
++            } else if (source == SDL_CONTROLLER_BUTTON_START) {
++                if (st && !sel) pressed |= b.mask;
++            } else if (source >= keymap::kPadStickBase) {
++                if (pad_amount(pad, source) >= 0.5) pressed |= b.mask;
++            } else if (source >= 0 && SDL_GameControllerGetButton(pad, static_cast<SDL_GameControllerButton>(source))) {
++                pressed |= b.mask;
++            }
++        }
++        // the console's sticks: each direction from the input keys.ini gives it (the default: the same direction of the same stick,
++        // which reads the axis as it is)
++        const auto stick = [&](int minus_action, int plus_action) -> std::uint8_t {
++            const int m = g_keys.pad[minus_action], p = g_keys.pad[plus_action];
++            if (m >= keymap::kPadStickBase && p == m + 1 && (m - keymap::kPadStickBase) % 2 == 0)
++                return axis(pad, static_cast<SDL_GameControllerAxis>((m - keymap::kPadStickBase) / 2));
++            const double v = 127.5 * (pad_amount(pad, p) - pad_amount(pad, m));
++            return static_cast<std::uint8_t>(std::clamp(static_cast<int>(std::lround(127.5 + v)), 0, 255));
+         };
+-        trigger(SDL_CONTROLLER_AXIS_TRIGGERLEFT, kL2, l2);
+-        trigger(SDL_CONTROLLER_AXIS_TRIGGERRIGHT, kR2, r2);
+-        if (lx == 0x80) lx = axis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+-        if (ly == 0x80) ly = axis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+-        if (rx == 0x80) rx = axis(pad, SDL_CONTROLLER_AXIS_RIGHTX);
+-        if (ry == 0x80) ry = axis(pad, SDL_CONTROLLER_AXIS_RIGHTY);
++        if (lx == 0x80) lx = stick(keymap::LeftLeft, keymap::LeftRight);
++        if (ly == 0x80) ly = stick(keymap::LeftUp, keymap::LeftDown);
++        if (rx == 0x80) rx = stick(keymap::RightLeft, keymap::RightRight);
++        if (ry == 0x80) ry = stick(keymap::RightUp, keymap::RightDown);
+     }
+     if (g_menu.is_open()) g_block_input[port] = true;
+     if (g_block_input[port]) {
+@@ -1078,7 +1109,7 @@ void menu_command(quickmenu::Command c, int step) {
              set_notice("The resolution is set by PS2_SCALE; remove it to choose here");
              break;
          }
@@ -26,7 +294,7 @@ index 6c7c2dc..c78beaf 100644
          g_keys.scale = g_scale_next;
          rewrite_keys_file([](const std::string &t) { return keymap::with_scale(t, g_scale_next); }, "resolution");
          set_notice("Resolution " + std::to_string(g_scale_next) + "x" + (g_scale_next == g_scale_now ? "" : ": used when the game starts the next time"));
-@@ -1347,12 +1347,18 @@ void poll() {
+@@ -1347,12 +1378,18 @@ void poll() {
  }
  
  void show_pixels(const std::uint32_t *rgba, std::uint32_t w, std::uint32_t h) {
@@ -46,7 +314,7 @@ index 6c7c2dc..c78beaf 100644
      }
      SDL_UpdateTexture(g_texture, nullptr, rgba, static_cast<int>(w * 4));
      SDL_RenderClear(g_renderer);
-@@ -1390,8 +1396,54 @@ bool no_limit() {
+@@ -1390,8 +1427,54 @@ bool no_limit() {
      return on;
  }
  
@@ -101,7 +369,7 @@ index 6c7c2dc..c78beaf 100644
      static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
      if (g_audio && !(stuck && g_pipe->full())) {
          // The audio device clock paces emulation: wait while more than ~80 ms of sound is waiting. The pipe times the game between
-@@ -1770,7 +1822,7 @@ bool open_window(bool fullscreen) {
+@@ -1770,7 +1853,7 @@ bool open_window(bool fullscreen) {
          ps2::os::set_env("PS2_SCALE", std::to_string(g_keys.scale));
          std::fprintf(stderr, "[video] resolution %dx from %s (scale = %d)\n", g_keys.scale, g_keys_path.c_str(), g_keys.scale);
      }
@@ -110,7 +378,7 @@ index 6c7c2dc..c78beaf 100644
      g_scale_next = g_scale_locked ? g_scale_now : (g_keys.scale >= 1 ? g_keys.scale : g_scale_now);
      Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0u);
  #ifdef __APPLE__
-@@ -1791,6 +1843,19 @@ bool open_window(bool fullscreen) {
+@@ -1791,6 +1874,19 @@ bool open_window(bool fullscreen) {
      if (SDL_GetWindowWMInfo(g_window, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
          ShowWindow(static_cast<HWND>(wm_info.info.win.window), SW_SHOWNORMAL);
          SetForegroundWindow(static_cast<HWND>(wm_info.info.win.window));
@@ -1679,7 +1947,7 @@ index 5dc3f1e..22ff750 100644
  
  }
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
-index 199204d..b87b20c 100644
+index 199204d..68b2332 100644
 --- a/runtime/src/system.cpp
 +++ b/runtime/src/system.cpp
 @@ -233,6 +233,22 @@ void time_frames() {
@@ -1705,7 +1973,7 @@ index 199204d..b87b20c 100644
      for (const Patch &p : g_options.patches) {
          if (boot ? p.place == 1 : p.place == 0) continue;
          switch (p.bytes) {
-@@ -291,8 +307,65 @@ void report_load() {
+@@ -291,8 +307,115 @@ void report_load() {
      last_frame = g_frames;
  }
  
@@ -1713,35 +1981,56 @@ index 199204d..b87b20c 100644
 +// picture is 16:9 only while that word of main memory says the game is in its widescreen part (a race, say) and no video is
 +// playing (no picture decode by the IPU in the last 15 frames); otherwise 4:3 (menus, videos: drawn for 4:3 only). With
 +// PS2_WIDE_WORD=ADDR the answer (1 or 0) is also written each frame into that 16-bit word of main memory, the option word a
-+// switchable widescreen patch checks, so the game's projection follows the picture.
++// switchable widescreen patch checks, so the game's projection follows the picture. Several conditions joined by '&' must all
++// hold (Midnight Club II: 00436C48=0x12&0042708C=0, in a race and its loading screen done).
++// PS2_WIDE_FLOAT=ADDR (hex) is a 32-bit float the game works out from the aspect only now and then (Midnight Club II: its
++// display setup at 0x36C880 stores aspect * height / width at 0x42FAB4, at boot and seldom after), so it can hold the other
++// shape's value: the menus' 3D (the controller picture, the turning cars) came out squeezed. When the option word changes, the
++// runtime rescales it by 16:9 / 4:3; a value the game wrote itself counts as made with the option word as it was then.
 +std::atomic<bool> g_wide_now{false};
 +
 +void update_wide() {
++    struct Test {
++        bool equal = true;
++        std::uint32_t address = 0, value = 0;
++    };
 +    struct Rule {
 +        bool on = false, equal = true;
 +        std::uint32_t address = 0, value = 0, word = 0;
 +        bool has_word = false;
++        std::vector<Test> also;  // the conditions after the first one ('&')
 +    };
 +    static const Rule rule = [] {
 +        Rule r;
-+        const std::string spec = os::env("PS2_WIDE_ONLY_IF");
-+        if (!g_options.widescreen || spec.empty()) return r;
-+        const std::size_t eq = spec.find('=');
-+        if (eq == std::string::npos || eq == 0) {
-+            std::fprintf(stderr, "[wide] PS2_WIDE_ONLY_IF=%s is not ADDR=VALUE or ADDR!=VALUE: ignored\n", spec.c_str());
-+            return r;
++        const std::string all = os::env("PS2_WIDE_ONLY_IF");
++        if (!g_options.widescreen || all.empty()) return r;
++        std::vector<Test> tests;
++        for (std::size_t from = 0; from <= all.size();) {
++            std::size_t amp = all.find('&', from);
++            if (amp == std::string::npos) amp = all.size();
++            const std::string spec = all.substr(from, amp - from);
++            from = amp + 1;
++            const std::size_t eq = spec.find('=');
++            if (eq == std::string::npos || eq == 0) {
++                std::fprintf(stderr, "[wide] PS2_WIDE_ONLY_IF=%s: '%s' is not ADDR=VALUE or ADDR!=VALUE: ignored\n", all.c_str(), spec.c_str());
++                return r;
++            }
++            Test t;
++            t.equal = spec[eq - 1] != '!';
++            t.address = static_cast<std::uint32_t>(std::strtoul(spec.substr(0, t.equal ? eq : eq - 1).c_str(), nullptr, 16)) & (kRamSize - 4);
++            t.value = static_cast<std::uint32_t>(std::strtoul(spec.c_str() + eq + 1, nullptr, 0));
++            tests.push_back(t);
 +        }
-+        r.equal = spec[eq - 1] != '!';
-+        r.address = static_cast<std::uint32_t>(std::strtoul(spec.substr(0, r.equal ? eq : eq - 1).c_str(), nullptr, 16)) & (kRamSize - 1);
-+        r.value = static_cast<std::uint32_t>(std::strtoul(spec.c_str() + eq + 1, nullptr, 0));
++        r.equal = tests[0].equal, r.address = tests[0].address, r.value = tests[0].value;
++        r.also.assign(tests.begin() + 1, tests.end());
 +        const std::string word = os::env("PS2_WIDE_WORD");
 +        if (!word.empty()) {
 +            r.word = static_cast<std::uint32_t>(std::strtoul(word.c_str(), nullptr, 16)) & (kRamSize - 2);
 +            r.has_word = true;
 +        }
 +        r.on = true;
-+        std::fprintf(stderr, "[wide] 16:9 only while the word at %08X %s %u and no video plays%s\n", r.address, r.equal ? "==" : "!=", r.value,
-+                     r.has_word ? " (mirrored into the option word)" : "");
++        std::fprintf(stderr, "[wide] 16:9 only while the word at %08X %s %u%s and no video plays%s\n", r.address, r.equal ? "==" : "!=", r.value,
++                     r.also.empty() ? "" : " (and the other conditions of PS2_WIDE_ONLY_IF)", r.has_word ? " (mirrored into the option word)" : "");
 +        return r;
 +    }();
 +    if (!rule.on) {
@@ -1750,11 +2039,40 @@ index 199204d..b87b20c 100644
 +    }
 +    std::uint32_t v = 0;
 +    std::memcpy(&v, g_ram + rule.address, 4);
-+    const bool game = (v == rule.value) == rule.equal;
++    bool game = (v == rule.value) == rule.equal;
++    for (const Test &t : rule.also) {
++        std::uint32_t tv = 0;
++        std::memcpy(&tv, g_ram + t.address, 4);
++        game = game && (tv == t.value) == t.equal;
++    }
 +    const std::uint64_t decoded = ipu::last_decode_frame();
 +    const bool video = decoded && g_frames - decoded < 15;
 +    const bool wide = game && !video;
 +    if (rule.has_word) {
++        static const std::uint32_t float_at = [] {
++            const std::string f = os::env("PS2_WIDE_FLOAT");
++            return f.empty() ? 0u : static_cast<std::uint32_t>(std::strtoul(f.c_str(), nullptr, 16)) & (kRamSize - 4);
++        }();
++        if (float_at) {
++            static float written = 0.0f;
++            static bool made_wide = false;
++            float f = 0.0f;
++            std::memcpy(&f, g_ram + float_at, 4);
++            if (f != written) {  // the game worked it out again: with the option word as it is in memory now
++                std::uint16_t old = 0;
++                std::memcpy(&old, g_ram + rule.word, 2);
++                made_wide = old == 1;
++                written = f;
++            }
++            if (f != 0.0f && made_wide != wide) {
++                f *= wide ? 4.0f / 3.0f : 3.0f / 4.0f;
++                std::memcpy(g_ram + float_at, &f, 4);
++                written = f;
++                made_wide = wide;
++                static const bool log = !os::env("PS2_WIDE_LOG").empty();
++                if (log) std::fprintf(stderr, "[wide] frame %llu: %08X rescaled to %g for %s\n", static_cast<unsigned long long>(g_frames), float_at, f, wide ? "16:9" : "4:3");
++            }
++        }
 +        const std::uint16_t w = wide ? 1 : 0;
 +        std::memcpy(g_ram + rule.word, &w, 2);
 +    }
@@ -1771,7 +2089,7 @@ index 199204d..b87b20c 100644
      // Offline EE cache preparation: capture only explicitly requested frames.
      // Disabled for normal runs; the filenames retain the frame and address so
      // a headless preparer can associate each image with the scripted input.
-@@ -621,6 +694,7 @@ std::string quick_newest_state() { return {}; }
+@@ -621,6 +744,7 @@ std::string quick_newest_state() { return {}; }
  #endif
  
  std::uint64_t frame_count() { return g_frames; }
