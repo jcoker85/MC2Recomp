@@ -6,7 +6,7 @@
 # launcher, which downloads the cover art, and the first Play asks for their own disc image.
 #
 # Usage (from the repository root, after tools/build.sh):
-#   bash tools/package_release.sh [--version 0.1]
+#   bash tools/package_release.sh [--version 0.2]
 # Output: dist/MC2Recomp-<version>/ and the same name + .zip
 #
 # The layout keeps the launcher's paths (hub/hub.c): games.txt points at <toolkit>/build/native-mc2/ps2run.exe, the
@@ -74,8 +74,11 @@ Needs 64-bit Windows 10 or 11, a CPU with AVX2, and a graphics card with Direct3
 1. Run MC2Recomp.exe. The cover art downloads in the background the first time.
 2. Press Play. The first time, it asks for your disc image; the launcher remembers it
    (Settings > Disc Image changes it).
-3. Settings has two tabs: Graphics (widescreen, 60 FPS, resolution, FSR and more) and Controls. Every option starts
-   off, so a fresh install plays the game as it is on a PS2.
+3. Settings has three tabs: Graphics (widescreen, 60 FPS, resolution, FSR and more), P1 Controls and P2 Controls.
+   Every option starts off, so a fresh install plays the game as it is on a PS2.
+
+Two players: the game's split-screen races (Arcade Mode, Players: 2). In Settings > P1 Controls > Device choose
+Keyboard to play player 1 on the keyboard with one controller for player 2, or Controller to use two controllers.
 
 Saves and controls are kept in game\\games\\mc2. The game program contains a machine-translated build of the game's own
 code. Licenses are in the licenses folder.

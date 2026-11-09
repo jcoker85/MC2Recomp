@@ -117,7 +117,7 @@ static int g_col;       /* COL_PLAY or COL_SETTINGS */
 static HANDLE g_child;
 static wchar_t g_dir[MAX_PATH];
 static wchar_t g_ini[MAX_PATH];
-static HFONT g_font_item, g_font_small, g_font_btn, g_font_head, g_font_set;
+static HFONT g_font_item, g_font_small, g_font_btn, g_font_head, g_font_set, g_font_tab;
 
 /* Pages: the game list, or the settings of one game. */
 enum { PAGE_LIST, PAGE_SETTINGS };
@@ -224,7 +224,8 @@ static void save_options(const Game* g) {
 /* --- keys.ini: the controls ---------------------------------------------------
  * The game's keys.ini (games\<id>\keys.ini, host/keymap.cpp in the toolkit) says which key or mouse button, and which
  * controller button ('pad_cross = a'), works each PS2 button. The game reads it at start and again when its window gets
- * the focus back. The Controls page reads and writes its lines; the other lines and the comments are left as they are. */
+ * the focus back. The Controls pages read and write its lines; the other lines and the comments are left as they are.
+ * Player 2's controller has its own lines, 'pad2_cross = a' and so on, with the same defaults as player 1's. */
 
 /* One row of the Controls page: the keys.ini word, the PS2 button or stick direction it is, the game's default key(s) and
  * controller input. Every row takes a controller input: a button, a trigger or a stick direction (the original game steers
@@ -264,7 +265,10 @@ static const char* k_hidden_words[] = { "roll", "rage", "help", "menu" };
 enum { DEV_CONTROLLER, DEV_KEYBOARD };
 static char g_keys_text[65536];         /* keys.ini as read */
 static char g_kb[BIND_COUNT][160];      /* each row's keys, as written in keys.ini ("Space, Enter") */
-static char g_pad[BIND_COUNT][32];      /* each row's controller button word ("a", "lefttrigger") */
+static char g_pad[2][BIND_COUNT][32];   /* each row's controller button word ("a", "lefttrigger"), for player 1 and player 2 */
+static int g_player;                    /* the controller the Controls page shows: 0 player 1, 1 player 2 */
+static int g_p1_keyboard;               /* keys.ini 'p1_device = keyboard': the keyboard is player 1, not a controller */
+static const char* k_pad_prefix[2] = { "pad_", "pad2_" };   /* the keys.ini names of player 1's and player 2's lines */
 static char g_hidden[sizeof k_hidden_words / sizeof k_hidden_words[0]][160];
 
 static void keys_path(const Game* g, wchar_t* out) {
@@ -364,12 +368,19 @@ static void keys_load(const Game* g) {
         char name[48];
         if (!keys_get(k_binds[i].word, g_kb[i], sizeof g_kb[i])) snprintf(g_kb[i], sizeof g_kb[i], "%s", k_binds[i].key_default);
         if (!k_binds[i].pad) continue;
-        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
-        if (!keys_get(name, g_pad[i], sizeof g_pad[i])) snprintf(g_pad[i], sizeof g_pad[i], "%s", k_binds[i].pad_default);
+        for (int p = 0; p < 2; p++) {
+            snprintf(name, sizeof name, "%s%s", k_pad_prefix[p], k_binds[i].word);
+            if (!keys_get(name, g_pad[p][i], sizeof g_pad[p][i])) snprintf(g_pad[p][i], sizeof g_pad[p][i], "%s", k_binds[i].pad_default);
+        }
     }
     static const char* hidden_defaults[] = { "Left Ctrl, Mouse X1", "none", "none", "none" };
     for (int i = 0; i < (int)(sizeof k_hidden_words / sizeof k_hidden_words[0]); i++)
         if (!keys_get(k_hidden_words[i], g_hidden[i], sizeof g_hidden[i])) snprintf(g_hidden[i], sizeof g_hidden[i], "%s", hidden_defaults[i]);
+    /* 'p1_device': what plays as player 1, the P1 Controls tab's Device choice (keyboard: the first controller is player 2) */
+    char dev[32] = "", c[32];
+    keys_get("p1_device", dev, sizeof dev);
+    squash(dev, c, sizeof c);
+    g_p1_keyboard = !strcmp(c, "keyboard");
 }
 
 static int keys_save(const Game* g) {
@@ -377,7 +388,7 @@ static int keys_save(const Game* g) {
     keys_path(g, path);
     if (!g_keys_text[0])    /* no keys.ini yet (the game writes the full one on its first start): a short one with a heading */
         snprintf(g_keys_text, sizeof g_keys_text,
-                 "# keys.ini: the controls. The launcher's Settings > Controls page writes these lines; any line that is not\r\n"
+                 "# keys.ini: the controls. The launcher's Settings > P1 and P2 Controls pages write these lines; any line that is not\r\n"
                  "# here keeps the game's default. Delete the file to get every default back.\r\n");
     FILE* f = _wfopen(path, L"wb");
     if (!f) return 0;
@@ -454,21 +465,22 @@ static void pad_canon(const char* word, char* out, size_t n) {
         if (!strcmp(out, same[i][0])) { snprintf(out, n, "%s", same[i][1]); return; }
 }
 
-/* Gives the controller button `word` to row `row`; a row that had it gets this row's old button. */
+/* Gives the controller button `word` to row `row` of the shown player's controller; a row that had it gets this row's old button. */
 static void bind_pad(int row, const char* word) {
     char want[32], c[32], name[48];
+    char (*pad)[32] = g_pad[g_player];
     pad_canon(word, want, sizeof want);
     for (int i = 0; i < BIND_COUNT; i++) {
         if (i == row || !k_binds[i].pad) continue;
-        pad_canon(g_pad[i], c, sizeof c);
+        pad_canon(pad[i], c, sizeof c);
         if (strcmp(c, want) != 0 || !strcmp(want, "none")) continue;
-        snprintf(g_pad[i], sizeof g_pad[i], "%s", g_pad[row]);
-        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
-        keys_set(name, g_pad[i]);
+        snprintf(pad[i], sizeof pad[i], "%s", pad[row]);
+        snprintf(name, sizeof name, "%s%s", k_pad_prefix[g_player], k_binds[i].word);
+        keys_set(name, pad[i]);
     }
-    snprintf(g_pad[row], sizeof g_pad[row], "%s", want);
-    snprintf(name, sizeof name, "pad_%s", k_binds[row].word);
-    keys_set(name, g_pad[row]);
+    snprintf(pad[row], sizeof pad[row], "%s", want);
+    snprintf(name, sizeof name, "%s%s", k_pad_prefix[g_player], k_binds[row].word);
+    keys_set(name, pad[row]);
 }
 
 /* How a controller button is shown: the Xbox names, which is what XInput pads (and SDL's positions) use. */
@@ -942,10 +954,15 @@ static RECT button_rect(int row, int col) {
 
 static Game* sgame(void) { return &g_games[g_sel]; }
 
-/* The settings page has two tabs, Graphics and Controls, chosen in its heading. g_srow -1 is the heading itself. */
-enum { TAB_GRAPHICS, TAB_CONTROLS };
+/* The settings page has three tabs, Graphics, P1 Controls and P2 Controls, chosen in its heading. g_srow -1 is the heading
+ * itself. P2 Controls is player 2's controller only: the keyboard always works player 1. */
+enum { TAB_GRAPHICS, TAB_P1, TAB_P2, TAB_COUNT };
+static const wchar_t* k_tab_names[TAB_COUNT] = { L"GRAPHICS", L"P1 CONTROLS", L"P2 CONTROLS" };
 static int g_tab = TAB_GRAPHICS;
-static int g_dev = DEV_CONTROLLER;  /* the Controls tab: the controller's buttons or the keyboard's keys */
+static int g_dev = DEV_CONTROLLER;  /* the P1 Controls tab: the controller's buttons or the keyboard's keys */
+static int is_controls(void) { return g_tab != TAB_GRAPHICS; }
+static int cur_dev(void) { return g_tab == TAB_P2 ? DEV_CONTROLLER : g_dev; }
+static int c_base(void) { return g_tab == TAB_P1; }   /* the first binding row: P1 Controls has the Device row above it */
 static int g_capture = -1;          /* the Controls row waiting for a key or button, or -1 */
 static DWORD g_capture_until;       /* it gives up then */
 static int g_ignore_up;             /* a mouse button given to a row: its button-up is not a click */
@@ -953,28 +970,28 @@ static WORD g_capture_pad;          /* the controller buttons already down when 
 static WORD g_capture_trig;         /* bit 0 / bit 1: a trigger already pulled when it began; bits 2-9 a stick direction */
 static wchar_t g_cmsg[160];         /* a line about the last change ("Accelerate now has Space. Handbrake got E.") */
 
-/* The Controls tab's rows: 0 the Controller / Keyboard choice, then one per button, then Reset, then Back. */
+/* The Controls tabs' rows: (P1 only) 0 the Controller / Keyboard choice, then one per button, then Reset, then Back. */
 static int cbind_count(void) {
     int n = 0;
-    for (int i = 0; i < BIND_COUNT; i++) n += g_dev == DEV_KEYBOARD || k_binds[i].pad;
+    for (int i = 0; i < BIND_COUNT; i++) n += cur_dev() == DEV_KEYBOARD || k_binds[i].pad;
     return n;
 }
 static int cbind_index(int row) {    /* the k_binds index of a binding row, or -1 */
-    int n = 0;
+    int n = c_base();
     for (int i = 0; i < BIND_COUNT; i++) {
-        if (g_dev != DEV_KEYBOARD && !k_binds[i].pad) continue;
-        if (++n == row) return i;
+        if (cur_dev() != DEV_KEYBOARD && !k_binds[i].pad) continue;
+        if (n++ == row) return i;
     }
     return -1;
 }
 #define C_DEVICE 0
-static int c_reset(void) { return cbind_count() + 1; }
-static int nrows(void) { return g_tab == TAB_GRAPHICS ? S_COUNT : cbind_count() + 3; }
+static int c_reset(void) { return c_base() + cbind_count(); }
+static int nrows(void) { return g_tab == TAB_GRAPHICS ? S_COUNT : c_base() + cbind_count() + 2; }
 static int back_row(void) { return nrows() - 1; }
 
 static int srow_enabled(int row) {
     const Game* g = sgame();
-    if (row < 0 || g_tab != TAB_GRAPHICS) return 1;
+    if (row < 0 || is_controls()) return 1;
     if (row == S_WIDE || row == S_SIXTY) return g->toggles;
     if (row == S_HUD43) return g->toggles && g->o.wide;
     if (row == S_DITHER) return !g->o.truecolor;
@@ -998,7 +1015,7 @@ static RECT srow_rect(int row) {
 
 /* The width of a row's value box. */
 static int sval_w(int row) {
-    if (g_tab == TAB_CONTROLS) return S_LOOK_W;
+    if (is_controls()) return S_LOOK_W;
     return row == S_LOOK || row == S_TEXFILTER ? S_LOOK_W : row == S_DISC ? S_DISC_W : S_VAL_W;
 }
 
@@ -1013,28 +1030,42 @@ static RECT sval_rect(int row) {
 
 /* Rows with a row of boxes, one per value (like the resolution's 1x..4x): how many, their text, which one is on. */
 static int sseg_count(int row) {
-    if (g_tab == TAB_CONTROLS) return row == C_DEVICE ? 2 : 0;
+    if (is_controls()) return g_tab == TAB_P1 && row == C_DEVICE ? 2 : 0;
     return row == S_SCALE ? 4 : row == S_MENUS43 || row == S_TRUECOLOR ? 2 : 0;
 }
-static int sseg_w(int row) { return g_tab == TAB_CONTROLS ? S_SEG3_W : row == S_SCALE ? S_SEG_W : S_SEG2_W; }
+static int sseg_w(int row) { return is_controls() ? S_SEG3_W : row == S_SCALE ? S_SEG_W : S_SEG2_W; }
 
 static const wchar_t* sseg_text(int row, int k) {
     static const wchar_t* scale[4] = { L"1x", L"2x", L"3x", L"4x" };
-    if (g_tab == TAB_CONTROLS) return k ? L"Keyboard" : L"Controller";
+    if (is_controls()) return k ? L"Keyboard" : L"Controller";
     if (row == S_SCALE) return scale[k];
     if (row == S_MENUS43) return k ? L"16:9" : L"4:3";
     return k ? L"32-bit" : L"16-bit";
 }
 
 static int sseg_value(const Options* o, int row) {
-    if (g_tab == TAB_CONTROLS) return g_dev;
+    if (is_controls()) return g_dev;
     if (row == S_SCALE) return o->scale - 1;
     if (row == S_MENUS43) return !o->menus43;   /* 4:3 menus and movies = the 4:3 Menus option on */
     return o->truecolor;
 }
 
 static void sseg_set(Options* o, int row, int k) {
-    if (g_tab == TAB_CONTROLS) { g_dev = k; g_capture = -1; g_cmsg[0] = 0; return; }
+    if (is_controls()) {    /* the Device choice is what plays as player 1 in the game, kept in keys.ini */
+        g_dev = k;
+        g_p1_keyboard = k == DEV_KEYBOARD;
+        g_capture = -1;
+        keys_set("p1_device", k == DEV_KEYBOARD ? "keyboard" : "controller");
+        if (!keys_save(sgame())) {
+            wchar_t p[MAX_PATH];
+            keys_path(sgame(), p);
+            swprintf(g_cmsg, 160, L"Could not write %ls", p);
+        } else {
+            swprintf(g_cmsg, 160, k == DEV_KEYBOARD ? L"Player 1 plays with the keyboard; the first controller is player 2"
+                                                    : L"Player 1 plays with a controller; the keyboard does not work the game");
+        }
+        return;
+    }
     if (row == S_SCALE) o->scale = k + 1;
     else if (row == S_MENUS43) o->menus43 = !k;
     else o->truecolor = k;
@@ -1051,20 +1082,23 @@ static RECT sseg_rect(int row, int k) {   /* k 0..sseg_count(row)-1, left to rig
     return r;
 }
 
-/* The two tabs in the heading, as drawn (their width comes from the heading font). */
+/* The three tabs in the heading, as drawn (their width comes from the heading font). */
 static RECT tab_rect(int tab) {
-    static int w[2];
+    static int w[TAB_COUNT];
     if (!w[0]) {
         HDC dc = GetDC(NULL);
-        HGDIOBJ old = SelectObject(dc, g_font_head);
+        HGDIOBJ old = SelectObject(dc, g_font_tab);
         SIZE sz;
-        GetTextExtentPoint32W(dc, L"GRAPHICS", 8, &sz); w[0] = sz.cx + 8;
-        GetTextExtentPoint32W(dc, L"CONTROLS", 8, &sz); w[1] = sz.cx + 8;
+        for (int t = 0; t < TAB_COUNT; t++) {
+            GetTextExtentPoint32W(dc, k_tab_names[t], (int)wcslen(k_tab_names[t]), &sz);
+            w[t] = sz.cx + 8;
+        }
         SelectObject(dc, old);
         ReleaseDC(NULL, dc);
     }
     RECT r;
-    r.left = MARGIN + (tab ? w[0] + 30 : 0);
+    r.left = MARGIN;
+    for (int t = 0; t < tab; t++) r.left += w[t] + 20;
     r.right = r.left + w[tab];
     r.top = 28;
     r.bottom = 80;
@@ -1090,9 +1124,13 @@ static void sshow_row(void) {
 
 static void set_tab(HWND hwnd, int tab, int focus_heading) {
     g_tab = tab;
+    g_player = tab == TAB_P2;
     g_capture = -1;
     g_cmsg[0] = 0;
-    if (tab == TAB_CONTROLS) keys_load(sgame());    /* the game's quick menu can change keys.ini too */
+    if (is_controls()) {
+        keys_load(sgame());    /* the game's quick menu can change keys.ini too */
+        g_dev = g_p1_keyboard ? DEV_KEYBOARD : DEV_CONTROLLER;
+    }
     g_srow = focus_heading ? -1 : 0;
     while (g_srow >= 0 && g_srow < back_row() && !srow_enabled(g_srow)) g_srow++;
     g_sscroll = 0;
@@ -1185,15 +1223,15 @@ static void capture_pad(HWND hwnd, const char* word) {
 
 static void clear_binding(HWND hwnd) {
     int i = cbind_index(g_srow);
-    if (g_tab != TAB_CONTROLS || i < 0) return;
+    if (!is_controls() || i < 0) return;
     wchar_t what[160];
-    if (g_dev == DEV_KEYBOARD) {
+    if (cur_dev() == DEV_KEYBOARD) {
         snprintf(g_kb[i], sizeof g_kb[i], "none");
         keys_set(k_binds[i].word, "none");
     } else {
         char name[48];
-        snprintf(g_pad[i], sizeof g_pad[i], "none");
-        snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
+        snprintf(g_pad[g_player][i], sizeof g_pad[g_player][i], "none");
+        snprintf(name, sizeof name, "%s%s", k_pad_prefix[g_player], k_binds[i].word);
         keys_set(name, "none");
     }
     swprintf(what, 160, L"%ls: None", k_binds[i].label);
@@ -1202,30 +1240,31 @@ static void clear_binding(HWND hwnd) {
 
 static void reset_controls(HWND hwnd) {
     for (int i = 0; i < BIND_COUNT; i++) {
-        if (g_dev == DEV_KEYBOARD) {
+        if (cur_dev() == DEV_KEYBOARD) {
             snprintf(g_kb[i], sizeof g_kb[i], "%s", k_binds[i].key_default);
             keys_set(k_binds[i].word, g_kb[i]);
         } else if (k_binds[i].pad) {
             char name[48];
-            snprintf(g_pad[i], sizeof g_pad[i], "%s", k_binds[i].pad_default);
-            snprintf(name, sizeof name, "pad_%s", k_binds[i].word);
-            keys_set(name, g_pad[i]);
+            snprintf(g_pad[g_player][i], sizeof g_pad[g_player][i], "%s", k_binds[i].pad_default);
+            snprintf(name, sizeof name, "%s%s", k_pad_prefix[g_player], k_binds[i].word);
+            keys_set(name, g_pad[g_player][i]);
         }
     }
-    controls_saved(hwnd, g_dev == DEV_KEYBOARD ? L"Keyboard controls set back to the defaults" : L"Controller buttons set back to the defaults");
+    controls_saved(hwnd, cur_dev() == DEV_KEYBOARD ? L"Keyboard controls set back to the defaults"
+                         : g_player ? L"Player 2's controller buttons set back to the defaults" : L"Controller buttons set back to the defaults");
 }
 
 /* Change the highlighted setting: d = -1 / +1 for left / right, 0 to toggle
  * (cycles the resolution). Saved at once. */
 static void schange(HWND hwnd, int d) {
     if (g_srow < 0) {   /* the heading: left / right or Enter changes the tab */
-        int t = d == 0 ? !g_tab : d > 0 ? TAB_CONTROLS : TAB_GRAPHICS;
+        int t = d == 0 ? (g_tab + 1) % TAB_COUNT : d > 0 ? (g_tab < TAB_COUNT - 1 ? g_tab + 1 : g_tab) : (g_tab ? g_tab - 1 : 0);
         if (t != g_tab) set_tab(hwnd, t, 1);
         return;
     }
     if (g_srow == back_row()) { if (d == 0) close_settings(hwnd); return; }
-    if (g_tab == TAB_CONTROLS) {
-        if (g_srow == C_DEVICE) {
+    if (is_controls()) {
+        if (g_tab == TAB_P1 && g_srow == C_DEVICE) {
             int k = d == 0 ? !g_dev : d > 0;
             if (k != g_dev) { sseg_set(NULL, C_DEVICE, k); sscroll_to(0); InvalidateRect(hwnd, NULL, FALSE); }
         } else if (g_srow == c_reset()) {
@@ -1277,7 +1316,7 @@ static void schange(HWND hwnd, int d) {
 /* The row under a point, -1 for the heading's tabs (*tab says which), -2 for nothing. */
 static int srow_at(int x, int y, int* tab) {
     POINT pt = { x, y };
-    for (int t = 0; t < 2; t++) {
+    for (int t = 0; t < TAB_COUNT; t++) {
         RECT r = tab_rect(t);
         if (PtInRect(&r, pt)) { if (tab) *tab = t; return -1; }
     }
@@ -1397,16 +1436,16 @@ static void paint_settings(HDC mem) {
     RECT rc = { 0, 0, CLIENT_W, CLIENT_H };
     fill_alpha(mem, rc, RGB(0, 0, 0), 185);
 
-    /* The heading: the two tabs. The open one is white and underlined; with the heading highlighted it also gets the red. */
-    SelectObject(mem, g_font_head);
-    for (int t = 0; t < 2; t++) {
+    /* The heading: the three tabs. The open one is white and underlined; with the heading highlighted it also gets the red. */
+    SelectObject(mem, g_font_tab);    /* smaller than the heading font, so the three tabs fit across */
+    for (int t = 0; t < TAB_COUNT; t++) {
         RECT r = tab_rect(t);
         if (t == g_tab && g_srow < 0) {
             RECT f = { r.left - 8, r.top + 2, r.right + 4, r.bottom - 2 };
             fill_alpha(mem, f, ACCENT_DIM, 110);
         }
         SetTextColor(mem, t == g_tab ? WHITE : DARK_GREY);
-        DrawTextW(mem, t ? L"CONTROLS" : L"GRAPHICS", -1, &r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+        DrawTextW(mem, k_tab_names[t], -1, &r, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
         if (t == g_tab) {
             RECT u = { r.left, r.bottom + 2, r.right - 8, r.bottom + 6 };
             fill_alpha(mem, u, ACCENT, 255);
@@ -1448,9 +1487,9 @@ static void paint_settings(HDC mem) {
         int text_right = r.right - 12 - (n ? n * sseg_w(i) + (n - 1) * S_SEG_GAP : sval_w(i)) - 10;
         const wchar_t* label;
         const wchar_t* note = NULL;
-        int bi = g_tab == TAB_CONTROLS ? cbind_index(i) : -1;
+        int bi = is_controls() ? cbind_index(i) : -1;
         if (g_tab == TAB_GRAPHICS) label = labels[i], note = notes[i];
-        else if (i == C_DEVICE) label = L"Device";
+        else if (g_tab == TAB_P1 && i == C_DEVICE) label = L"Device";
         else if (i == c_reset()) label = L"Reset to Defaults";
         else label = k_binds[bi].label;
         /* the name in the middle of the row, or above the line under it */
@@ -1469,12 +1508,12 @@ static void paint_settings(HDC mem) {
         if (n) {
             int v = sseg_value(o, i);
             for (int k = 0; k < n; k++) draw_value(mem, sseg_rect(i, k), sseg_text(i, k), v == k, en);
-        } else if (g_tab == TAB_CONTROLS) {
+        } else if (is_controls()) {
             if (i == c_reset()) {
                 draw_value(mem, sval_rect(i), L"RESET", 0, 1);
             } else if (i == g_capture) {
-                draw_value(mem, sval_rect(i), g_dev == DEV_KEYBOARD ? L"Press a key..." : L"Press an input...", 1, 1);
-            } else if (g_dev == DEV_KEYBOARD) {
+                draw_value(mem, sval_rect(i), cur_dev() == DEV_KEYBOARD ? L"Press a key..." : L"Press an input...", 1, 1);
+            } else if (cur_dev() == DEV_KEYBOARD) {
                 wchar_t keys[200];
                 kb_display(g_kb[bi], keys, 200);
                 SelectObject(mem, wcslen(keys) > 16 ? g_font_small : g_font_btn);
@@ -1485,7 +1524,7 @@ static void paint_settings(HDC mem) {
                 RECT t = { v.left + 6, v.top, v.right - 6, v.bottom };
                 DrawTextW(mem, keys, -1, &t, DT_CENTER | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
             } else {
-                draw_value(mem, sval_rect(i), pad_display(g_pad[bi]), 0, 1);
+                draw_value(mem, sval_rect(i), pad_display(g_pad[g_player][bi]), 0, 1);
             }
         } else if (i == S_LOOK) {
             draw_value(mem, sval_rect(i), k_look_names[o->look], 0, 1);
@@ -1515,15 +1554,15 @@ static void paint_settings(HDC mem) {
     SetTextColor(mem, g_cmsg[0] && g_capture < 0 ? WHITE : GREY);
     const wchar_t* hint = L"Arrows choose   Enter/A change   LB/RB tabs   Esc/B back";
     if (g_capture >= 0)
-        hint = g_dev == DEV_KEYBOARD ? L"Press the key or mouse button for it (wait 5 seconds to cancel)"
+        hint = cur_dev() == DEV_KEYBOARD ? L"Press the key or mouse button for it (wait 5 seconds to cancel)"
                                      : L"Press a button, pull a trigger or push a stick (Esc or wait 5 s to cancel)";
     else if (g_cmsg[0]) hint = g_cmsg;
-    else if (g_tab == TAB_CONTROLS && cbind_index(g_srow) >= 0)
+    else if (is_controls() && cbind_index(g_srow) >= 0)
         hint = L"Enter/A rebind   Del/Y clear   LB/RB tabs   Esc/B back";
     DrawTextW(mem, hint, -1, &h, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
 
-/* "--render <tab> <device> <row> <file.bmp>": draws the settings page (tab 0 Graphics, 1 Controls; device 0 controller,
+/* "--render <tab> <device> <row> <file.bmp>": draws the settings page (tab 0 Graphics, 1 P1 Controls, 2 P2 Controls; device 0 controller,
  * 1 keyboard; row -1 the heading) of the first game into a picture without opening a window, to check the layout. */
 static int render_to_file(int tab, int dev, int row, const wchar_t* file) {
     if (!g_count) return 1;
@@ -1533,7 +1572,8 @@ static int render_to_file(int tab, int dev, int row, const wchar_t* file) {
     g_page = PAGE_SETTINGS;
     g_dev = dev;
     g_tab = tab;
-    if (tab == TAB_CONTROLS) keys_load(&g_games[0]);
+    g_player = tab == TAB_P2;
+    if (is_controls()) keys_load(&g_games[0]);
     g_srow = row;
     sshow_row();
     HDC screen = GetDC(NULL);
@@ -1666,7 +1706,7 @@ static void activate(HWND hwnd) {
 static void key(HWND hwnd, WPARAM vk, LPARAM lp) {
     if (g_page == PAGE_SETTINGS) {
         if (g_capture >= 0) {   /* the waiting row takes the key, Esc included (a controller row: Esc cancels) */
-            if (g_dev == DEV_CONTROLLER) {
+            if (cur_dev() == DEV_CONTROLLER) {
                 if (vk == VK_ESCAPE) { g_capture = -1; InvalidateRect(hwnd, NULL, FALSE); }
                 return;
             }
@@ -1687,8 +1727,8 @@ static void key(HWND hwnd, WPARAM vk, LPARAM lp) {
         else if (vk == VK_RIGHT) schange(hwnd, 1);
         else if (vk == VK_RETURN || vk == VK_SPACE) schange(hwnd, 0);
         else if (vk == VK_DELETE) clear_binding(hwnd);
-        else if (vk == VK_PRIOR) set_tab(hwnd, TAB_GRAPHICS, g_srow < 0);
-        else if (vk == VK_NEXT) set_tab(hwnd, TAB_CONTROLS, g_srow < 0);
+        else if (vk == VK_PRIOR) set_tab(hwnd, g_tab ? g_tab - 1 : 0, g_srow < 0);
+        else if (vk == VK_NEXT) set_tab(hwnd, g_tab < TAB_COUNT - 1 ? g_tab + 1 : g_tab, g_srow < 0);
         else if (vk == VK_ESCAPE || vk == VK_BACK) close_settings(hwnd);
         InvalidateRect(hwnd, NULL, FALSE);
         return;
@@ -1751,7 +1791,7 @@ static void tick(HWND hwnd) {
     WORD pressed = now & ~g_pad_prev;
     g_pad_prev = now;
     if (g_capture >= 0) {
-        if (g_dev == DEV_CONTROLLER) capture_from_pad(hwnd, now, trig);
+        if (cur_dev() == DEV_CONTROLLER) capture_from_pad(hwnd, now, trig);
         else if (pressed & 0x2000) { g_capture = -1; InvalidateRect(hwnd, NULL, FALSE); }   /* B cancels a keyboard row */
         return;
     }
@@ -1763,8 +1803,8 @@ static void tick(HWND hwnd) {
     if (pressed & 0x2000) key(hwnd, VK_ESCAPE, 0);   /* B: back, or quit on the list */
     if (g_page == PAGE_SETTINGS) {
         if (pressed & 0x8000) key(hwnd, VK_DELETE, 0);   /* Y: clear a binding */
-        if (pressed & 0x0100) key(hwnd, VK_PRIOR, 0);    /* LB: the Graphics tab */
-        if (pressed & 0x0200) key(hwnd, VK_NEXT, 0);     /* RB: the Controls tab */
+        if (pressed & 0x0100) key(hwnd, VK_PRIOR, 0);    /* LB: the tab to the left */
+        if (pressed & 0x0200) key(hwnd, VK_NEXT, 0);     /* RB: the tab to the right */
     }
 }
 
@@ -1787,7 +1827,7 @@ static void mouse_move(HWND hwnd, int x, int y) {
 
 /* A mouse button pressed while a keyboard row waits: that row gets the mouse button. Returns 1 when it was taken. */
 static int mouse_capture(HWND hwnd, const char* token) {
-    if (g_page != PAGE_SETTINGS || g_capture < 0 || g_dev != DEV_KEYBOARD) return 0;
+    if (g_page != PAGE_SETTINGS || g_capture < 0 || cur_dev() != DEV_KEYBOARD) return 0;
     capture_key(hwnd, token);
     g_ignore_up = 1;
     return 1;
@@ -1836,7 +1876,7 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         key(hwnd, wp, lp);
         return 0;
     case WM_SYSKEYDOWN:     /* Alt and F10: only a waiting keyboard row takes them */
-        if (g_page == PAGE_SETTINGS && g_capture >= 0 && g_dev == DEV_KEYBOARD) {
+        if (g_page == PAGE_SETTINGS && g_capture >= 0 && cur_dev() == DEV_KEYBOARD) {
             if (!(lp & (1 << 30))) key(hwnd, wp, lp);
             return 0;
         }
@@ -1904,6 +1944,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show) {
 
     /* Impact, slanted, is close to the cover's heavy italic logo lettering. */
     g_font_head = CreateFontW(-38, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
+    g_font_tab = CreateFontW(-29, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
     g_font_item = CreateFontW(-26, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
     g_font_set = CreateFontW(-23, 0, 0, 0, FW_NORMAL, TRUE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");
     g_font_btn = CreateFontW(-19, 0, 0, 0, FW_NORMAL, FALSE, 0, 0, DEFAULT_CHARSET, 0, 0, ANTIALIASED_QUALITY, 0, L"Impact");

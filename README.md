@@ -2,7 +2,8 @@
 
 Midnight Club II (PS2, 2003) as a native Windows program, built with
 [ps2-native-recomp](https://github.com/exoteric33/ps2-native-recomp) from your own disc, with a launcher and a set of
-optional improvements: widescreen, 60 FPS, higher resolutions, upscaling, and more.
+optional improvements: widescreen, 60 FPS, higher resolutions, upscaling, and more. The game's split-screen 2-player
+races work, with two controllers or with the keyboard and one controller.
 
 | Game | Disc | Serial |
 |---|---|---|
@@ -23,8 +24,8 @@ Windows 10 or 11 (64-bit), a CPU with AVX2 and a Direct3D 12 graphics card.
 2. Run `MC2Recomp.exe`. The cover art downloads in the background the first time.
 3. Press **Play**. The first time, it asks for your disc image; the launcher remembers it
    (**Settings > Disc Image** changes it).
-4. **Settings** has two tabs: **Graphics**, with the options below, and **Controls**. Every option starts off, so a fresh
-   install plays the game as it is on a PS2.
+4. **Settings** has three tabs: **Graphics**, with the options below, **P1 Controls** and **P2 Controls**. Every option
+   starts off, so a fresh install plays the game as it is on a PS2.
 
 ### Options
 
@@ -41,10 +42,20 @@ Windows 10 or 11 (64-bit), a CPU with AVX2 and a Direct3D 12 graphics card.
 - **Smooth Distant Textures** (less shimmer on far buildings; not something a PS2 does)
 - **Skip Intro**: straight to the menu, with the game's own developer switch
 
-**Controls** rebinds every PS2 button and each direction of both analog sticks, for a controller or the keyboard and
-mouse. A controller row takes a button, a trigger or a stick direction; triggers and stick directions stay analog on a
+**P1 Controls** chooses what plays as player 1, **Controller** or **Keyboard** (with the mouse), and rebinds every PS2
+button and each direction of both analog sticks for it. With Controller the keyboard does not work the game; with
+Keyboard the first controller connected is player 2. A controller row takes a button, a trigger or a stick direction; triggers and stick directions stay analog on a
 stick, so the right stick's up and down (the game's gas and brake) can go on the triggers. Choose a row, then press the
-new input. An input that another row had swaps with it. The bindings are kept in the game's `keys.ini`.
+new input. An input that another row had swaps with it. **P2 Controls** does the same for player 2's controller (a
+controller only: the keyboard always plays as player 1); it starts with the same bindings as player 1's controller. The
+bindings are kept in the game's `keys.ini` (player 2's lines start with `pad2_`).
+
+### Two players
+
+The game's split-screen 2-player races work. Choose player 1's device in **Settings > P1 Controls > Device**: with
+**Keyboard**, one controller is enough (it is player 2); with **Controller**, connect two (the first one connected is
+player 1, the second player 2). In the game, go to **Arcade Mode**, move down to **Players** and set it to **2**, then start the race. Each player's car, rumble and
+controls are their own, and the widescreen, Fixed Widescreen HUD and 60 FPS options work in both halves of the screen.
 
 ## Build
 
