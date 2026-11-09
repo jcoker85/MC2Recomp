@@ -16,7 +16,10 @@ Interactive Entertainment.
 You need your own disc image of Midnight Club II (USA) as an `.iso`. A `.chd` can be turned into one with MAME's chdman:
 `chdman extractdvd -i "Midnight Club II.chd" -o "Midnight Club II.iso"`.
 
-1. Build it (below). There are no prebuilt downloads: the game program is translated from your own disc on your machine.
+Windows 10 or 11 (64-bit), a CPU with AVX2 and a Direct3D 12 graphics card.
+
+1. Download the latest release zip from [Releases](https://github.com/jcoker85/MC2Recomp/releases) and unzip it anywhere
+   (or build it yourself, below).
 2. Run `MC2Recomp.exe`. The cover art downloads in the background the first time.
 3. Press **Play**. The first time, it asks for your disc image; the launcher remembers it
    (**Settings > Disc Image** changes it).
@@ -69,7 +72,11 @@ The first build takes a while. Code the first build did not see is translated wh
 The repository holds the launcher, patches, build files and documentation. It does **not** contain disc images, the game's
 program, game assets, cover art, the launcher's icon artwork or recompiled game code. The recompiled C++ and the game program are generated on your
 machine from your own disc and stay in `ps2-native-recomp/generated` and `ps2-native-recomp/games`, which git ignores. When the
-game runs, it reads its data from your disc image. Cover art is downloaded at run time from
+game runs, it reads its data from your disc image.
+
+Release zips contain the built programs: the launcher and the game program, which includes a machine-translated build of
+the game's own code. They contain no disc data, game assets or cover art; the launcher's icon (credited below) is built into `MC2Recomp.exe`. `tools/package_release.sh` makes one from a
+finished build. Cover art is downloaded at run time from
 [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) and is not redistributed here.
 
 - `hub/`: the launcher (`hub.c`, ported from the TwistedMetal1234Recomp menu) and its build files. Its icon is not in the
@@ -83,7 +90,7 @@ game runs, it reads its data from your disc image. Cover art is downloaded at ru
 - `patches/ps2-native-recomp.patch`: this project's changes to the toolkit: the MC2 HUD hooks and fixes the game needed to
   run, dithering, texture filtering, smooth distant textures, FSR, the 4:3 menus switch, and faster texture uploads.
 - `ps2-native-recomp/`: the toolkit, as a git submodule.
-- `tools/`: the build script and the icon script.
+- `tools/`: the build script, the release packaging script and the icon script.
 
 ## Credits
 
