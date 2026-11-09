@@ -1,0 +1,18 @@
+# Midnight Club II (SLUS-20209, CRC E5F2DF38): PCSX2 community patches made switchable at launch.
+# ADDRESS  PATCHED-WORD  COND-ADDRESS  VALUE  (the patched word runs while the 16-bit value at COND-ADDRESS equals VALUE;
+# otherwise the game's own instruction runs). The option words live just below the game's load address (0x100000),
+# memory neither the game nor the runtime uses; mc2.sh writes them at boot through ps2run --patches.
+#
+# [Widescreen 16:9] by Arapapa: the projection's aspect constant 4/3 (3FAAAAA8) becomes 16/9 (3FE38E35). Option word 000FFF00.
+0036C884 3C013FE3 000FFF00 1
+0036C888 34218E35 000FFF00 1
+# [60 FPS] by PeterDelta ("might need EE overclock"). Option word 000FFF02.
+00106F64 24070001 000FFF02 1
+001FF094 3C013E19 000FFF02 1
+001FF0C0 3C010EC0 000FFF02 1
+003A01AC 3C013F00 000FFF02 1
+# Respawn speed-up fix for [60 FPS] (found 2026-11-08, not in PeterDelta's patch): the patch halves the game's time scale at
+# 0x432184 (1.0 -> 0.5, at 003A01AC), but when a timed effect ends (crashing into a gas station, exploding and respawning) the
+# function around 0x20EC88 puts the scale back to a fixed 1.0 (lui at,0x3F80 at 0020ECD4), and from then on the game runs twice as
+# fast. With 60 fps on it puts back 0.5.
+0020ECD4 3C013F00 000FFF02 1

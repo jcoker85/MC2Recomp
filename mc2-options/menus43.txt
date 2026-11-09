@@ -1,0 +1,13 @@
+# Midnight Club II "4:3 Menus" (mc2.cmd menus43, the hub's 4:3 Menus option): with widescreen on, only the game's driving
+# (races, cruising, their pause menu) is 16:9; the front-end menus and the videos are 4:3.
+# NAME=VALUE lines set for the runtime (runtime/src/system.cpp, update_wide; reapply mc2-options\menus43-runtime.patch
+# after the toolkit is replaced):
+#   PS2_WIDE_ONLY_IF  16:9 only while this 32-bit word of EE memory has this value, and no IPU picture decode in the
+#                     last 15 frames (the videos). 0x00436C48 is the game's mode (written at pc 0x003F808C): 0x07..0x15
+#                     during boot and the intro videos, 0x11 in the front end, 0x12 from the moment a race or cruise is
+#                     started (its loading screen included) until "Exit To Front End". Found by EE RAM dumps of recorded
+#                     sessions, checked over arcade, career and a second race.
+#   PS2_WIDE_WORD     the runtime writes 1/0 into this 16-bit option word each frame, so the widescreen patch's
+#                     projection (mc2-options\toggles.txt, 000FFF00) follows the picture.
+PS2_WIDE_ONLY_IF=00436C48=0x12
+PS2_WIDE_WORD=000FFF00

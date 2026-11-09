@@ -1,0 +1,18 @@
+gametitle=Midnight Club II (U)(SLUS-20209) E5F2DF38
+
+[Peds 60 FPS]
+author=made for this recompilation (mc2-options/peds60.py)
+description=Pedestrian animations at their own speed with the 60 FPS patch; switched by the 16-bit word at 000FFF02.
+patch=0,EE,0029A194,word,0C03FD00
+patch=0,EE,000FF400,word,3C020010
+patch=0,EE,000FF404,word,9442FF02
+patch=0,EE,000FF408,word,10400007
+patch=0,EE,000FF40C,word,3C030043
+patch=0,EE,000FF410,word,8C632170
+patch=0,EE,000FF414,word,30630001
+patch=0,EE,000FF418,word,10600003
+patch=0,EE,000FF41C,word,00000000
+patch=0,EE,000FF420,word,03E00008
+patch=0,EE,000FF424,word,00000000
+patch=0,EE,000FF428,word,080A74AC
+patch=0,EE,000FF42C,word,00000000

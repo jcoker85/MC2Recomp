@@ -1,0 +1,6 @@
+# The patch against the toolkit must keep its exact bytes for git apply
+*.patch -text
+# Windows batch files keep CRLF
+*.cmd text eol=crlf
+*.sh text eol=lf
+*.ico binary
