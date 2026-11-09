@@ -54,20 +54,20 @@ bash tools/build.sh "/c/Games/Midnight Club II (USA).iso"
 2. sets up the toolkit's build tools;
 3. translates the game's code from your disc into C++ and builds the game program (`ps2run.exe`), with the patches in
    `mc2-options/`;
-4. builds the launcher, `MC2Recomp.exe`.
+4. downloads the launcher's icon (`tools/make_icon.ps1`, below) and builds the launcher, `MC2Recomp.exe`.
 
 The first build takes a while. Code the first build did not see is translated while you play and kept for next time.
 
 ## What is and is not in this repository
 
 The repository holds the launcher, patches, build files and documentation. It does **not** contain disc images, the game's
-program, game assets, cover art or recompiled game code. The recompiled C++ and the game program are generated on your
+program, game assets, cover art, the launcher's icon artwork or recompiled game code. The recompiled C++ and the game program are generated on your
 machine from your own disc and stay in `ps2-native-recomp/generated` and `ps2-native-recomp/games`, which git ignores. When the
 game runs, it reads its data from your disc image. Cover art is downloaded at run time from
 [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) and is not redistributed here.
 
-- `hub/`: the launcher (`hub.c`, ported from the TwistedMetal1234Recomp menu), its icon (drawn by `tools/make_icon.py`)
-  and build files.
+- `hub/`: the launcher (`hub.c`, ported from the TwistedMetal1234Recomp menu) and its build files. Its icon is not in the
+  repository: `tools/make_icon.ps1` downloads it at build time (any square PNG at `hub/icon/hub.png` is used instead).
 - `mc2-options/`:
   - `toggles.txt`: the PCSX2 community patches (Widescreen 16:9 by Arapapa, 60 FPS by PeterDelta) as instructions that
     switch at run time, plus this project's fix for the speed after a respawn.
@@ -88,13 +88,15 @@ game runs, it reads its data from your disc image. Cover art is downloaded at ru
 - AMD FidelityFX Super Resolution 1.0 (MIT, Copyright (c) 2021 Advanced Micro Devices, Inc.): the FSR picture mode is
   written after AMD's published shaders.
 - Box art in the launcher: [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails).
+- The launcher and game window icon: [Midnight Club II icon by RAZELIGHT](https://www.steamgriddb.com/icon/90267) on
+  SteamGridDB, downloaded at build time.
 
 ## License
 
 MIT; see `LICENSE`. ps2-native-recomp is MIT as well.
 
 Midnight Club is a trademark of Take-Two Interactive Software, Inc., and the game is copyright its owners. This repository
-contains none of its code, data or artwork.
+contains none of its code, data or artwork, nor the icon and box art the launcher downloads.
 
 ## AI disclosure
 

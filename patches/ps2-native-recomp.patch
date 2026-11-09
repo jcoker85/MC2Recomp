@@ -14,7 +14,7 @@ index ea997e0..10b3bdc 100644
          }
          if (name == "mousespeed") {
 diff --git a/host/window.cpp b/host/window.cpp
-index 6c7c2dc..925a5f9 100644
+index 6c7c2dc..c78beaf 100644
 --- a/host/window.cpp
 +++ b/host/window.cpp
 @@ -1078,7 +1078,7 @@ void menu_command(quickmenu::Command c, int step) {
@@ -110,6 +110,26 @@ index 6c7c2dc..925a5f9 100644
      g_scale_next = g_scale_locked ? g_scale_now : (g_keys.scale >= 1 ? g_keys.scale : g_scale_now);
      Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0u);
  #ifdef __APPLE__
+@@ -1791,6 +1843,19 @@ bool open_window(bool fullscreen) {
+     if (SDL_GetWindowWMInfo(g_window, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
+         ShowWindow(static_cast<HWND>(wm_info.info.win.window), SW_SHOWNORMAL);
+         SetForegroundWindow(static_cast<HWND>(wm_info.info.win.window));
++        // PS2_WINDOW_ICON=<.exe or .ico>: the window's title bar and taskbar icon, taken from that file (a launcher gives its own
++        // program, so the game shows the launcher's icon)
++        if (const std::string icon = ps2::os::env("PS2_WINDOW_ICON"); !icon.empty()) {
++            const int n = MultiByteToWideChar(CP_UTF8, 0, icon.c_str(), -1, nullptr, 0);
++            std::wstring wide(static_cast<std::size_t>(n > 0 ? n : 1), L'\0');
++            MultiByteToWideChar(CP_UTF8, 0, icon.c_str(), -1, wide.data(), n);
++            HICON big = nullptr, small = nullptr;
++            if (ExtractIconExW(wide.c_str(), 0, &big, &small, 1) > 0) {
++                const HWND hwnd = static_cast<HWND>(wm_info.info.win.window);
++                if (big) SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(big));
++                if (small) SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(small));
++            }
++        }
+     }
+ #endif
+     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 diff --git a/runtime/include/ps2/system.hpp b/runtime/include/ps2/system.hpp
 index d0d445f..1140c2b 100644
 --- a/runtime/include/ps2/system.hpp

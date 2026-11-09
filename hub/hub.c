@@ -428,6 +428,9 @@ static int prepare(const Game* g, Launch* L, wchar_t* err, size_t errn) {
     SetEnvironmentVariableW(L"PS2_PACE", o->pacing ? L"clock" : NULL);
     SetEnvironmentVariableW(L"PS2_PRESENT_MODE", o->vsync ? L"fifo" : NULL);
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", L->title);
+    /* the game window shows this launcher's icon (the runtime takes it out of this program) */
+    wchar_t self[MAX_PATH];
+    if (GetModuleFileNameW(NULL, self, MAX_PATH)) SetEnvironmentVariableW(L"PS2_WINDOW_ICON", self);
     /* 4:3 menus and videos: <id>-options/menus43.txt holds the runtime's NAME=VALUE lines
      * (PS2_WIDE_ONLY_IF, PS2_WIDE_WORD) that tell a race from a menu. */
     SetEnvironmentVariableW(L"PS2_WIDE_ONLY_IF", NULL);
@@ -517,7 +520,7 @@ static int check(const wchar_t* id) {
         out(L"name=%ls\n", L.name);
         out(L"cwd=%ls\nexe=%ls\ncmd=%ls\n", g->tool, g->exe, L.cmd);
         static const wchar_t* vars[] = { L"PS2_SCALE", L"PS2_TRUE_COLOR", L"PS2_PACE",
-                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR" };
+                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR", L"PS2_WINDOW_ICON" };
         for (int v = 0; v < (int)(sizeof vars / sizeof vars[0]); v++) {
             wchar_t val[512];
             if (GetEnvironmentVariableW(vars[v], val, 512)) out(L"%ls=%ls\n", vars[v], val);
