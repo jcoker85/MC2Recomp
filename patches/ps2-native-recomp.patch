@@ -1493,7 +1493,7 @@ index a7a62ad..e10c068 100644
  void stats();
  
 diff --git a/runtime/src/gs/gpu/gs.wgsl b/runtime/src/gs/gpu/gs.wgsl
-index db25862..1f3570a 100644
+index db25862..171611c 100644
 --- a/runtime/src/gs/gpu/gs.wgsl
 +++ b/runtime/src/gs/gpu/gs.wgsl
 @@ -20,6 +20,14 @@ override EXPLICIT_FMA: bool = false;
@@ -1539,26 +1539,32 @@ index db25862..1f3570a 100644
      return s;
  }
  
-@@ -815,6 +830,40 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
+@@ -815,6 +830,46 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
      return Pick(u32(whole), lod - whole, linear);
  }
  
 +// Smooth distant textures (TEX_SS): up to 4 x 4 reads spread over the sample's footprint (g_tex_grad, shade_at), averaged, for a
 +// texture read at its base level without mip levels (`on`); otherwise, or with TEX_SS off, the one read as before.
 +fn sample_ss(s: Setup, u: f32, v: f32, k: u32, on: bool) -> u32 {
-+    if (!TEX_SS || !on || !g_tex_grad_on) {
++    if (!TEX_SS || !on || !g_tex_grad_on || rt_copy) {
 +        return sample(s, u, v, k);
 +    }
 +    let gx = g_tex_grad.xy;
 +    let gy = g_tex_grad.zw;
-+    let nx = u32(clamp(ceil(length(gx)), 1.0, 4.0));
-+    let ny = u32(clamp(ceil(length(gy)), 1.0, 4.0));
++    // Taps only where the footprint is more than about 1.5 texels across (rounded, not ceil: a footprint of 1.01 texels took 2 x 2
++    // bilinear taps, 16 reads, for no visible change); several taps are single texels, as the average over the footprint is the
++    // filter (a bilinear tap each read 4 texels, up to 64 a pixel: Smooth distant textures cost 9 ms a frame at 4x in Midnight Club).
++    let nx = u32(clamp(floor(length(gx) + 0.5), 1.0, 4.0));
++    let ny = u32(clamp(floor(length(gy) + 0.5), 1.0, 4.0));
++    if (nx * ny == 1u) {
++        return sample(s, u, v, k);
++    }
 +    var acc = vec4<f32>(0.0);
 +    for (var j = 0u; j < ny; j = j + 1u) {
 +        let oy = (f32(j) + 0.5) / f32(ny) - 0.5;
 +        for (var i = 0u; i < nx; i = i + 1u) {
 +            let ox = (f32(i) + 0.5) / f32(nx) - 0.5;
-+            let c = sample(s, u + gx.x * ox + gy.x * oy, v + gx.y * ox + gy.y * oy, k);
++            let c = fetch(s, i32(floor(u + gx.x * ox + gy.x * oy)), i32(floor(v + gx.y * ox + gy.y * oy)), k);
 +            acc = acc + vec4<f32>(vec4<u32>(c & 0xFFu, (c >> 8u) & 0xFFu, (c >> 16u) & 0xFFu, c >> 24u));
 +        }
 +    }
@@ -1580,7 +1586,7 @@ index db25862..1f3570a 100644
  fn blend4(c00: u32, c10: u32, c01: u32, c11: u32, fx: f32, fy: f32) -> u32 {
      let a = vec4<f32>(vec4<u32>(c00 & 0xFFu, (c00 >> 8u) & 0xFFu, (c00 >> 16u) & 0xFFu, c00 >> 24u));
      let b = vec4<f32>(vec4<u32>(c10 & 0xFFu, (c10 >> 8u) & 0xFFu, (c10 >> 16u) & 0xFFu, c10 >> 24u));
-@@ -990,13 +1039,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -990,13 +1045,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
                      lv = nv * f32(1u << l.th);
                  }
              }
@@ -1598,7 +1604,7 @@ index db25862..1f3570a 100644
          let tr = i32(t & 0xFFu);
          let tg = i32((t >> 8u) & 0xFFu);
          let tb = i32((t >> 16u) & 0xFFu);
-@@ -1149,6 +1201,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1149,6 +1207,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
              g = g & 0xFF;
              b = b & 0xFF;
          }
@@ -1620,7 +1626,7 @@ index db25862..1f3570a 100644
          var out_a = u32(a & 0xFF);
          if (has(s, F_FBA)) {
              out_a = out_a | 0x80u;
-@@ -1165,7 +1232,7 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1165,7 +1238,7 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
  }
  
  const PRIM_WORDS: u32 = 28u;
@@ -1629,7 +1635,7 @@ index db25862..1f3570a 100644
  const MIP_WORDS: u32 = 8u;
  
  fn fat(i: u32) -> f32 {
-@@ -1198,6 +1265,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1198,6 +1271,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
      rt_copy = false;
      let kind = data[p + 1u];
      var at: Attr;
@@ -1637,7 +1643,7 @@ index db25862..1f3570a 100644
      switch kind {
          case 0u {
              let x0 = fat(p + 4u);
-@@ -1264,6 +1332,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1264,6 +1338,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
              let t2 = vertex_tex(p, 2u);
              var t = weighted4(t0, t1, t2, w0, w1, w2);
              t.w = bary1(t0.w, t1.w, t2.w, w1, w2);
@@ -1659,7 +1665,7 @@ index db25862..1f3570a 100644
              at = Attr(c.x, c.y, c.z, c.w, t.x, t.y, t.z, t.w, z_at(p, sum2(fat(p + 25u), fat(p + 26u), w1, w2)));
          }
          case 1u {
-@@ -1373,14 +1456,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1373,14 +1462,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
  
  @compute @workgroup_size(64)
  fn decode(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -2205,6 +2211,44 @@ index 450889b..6ff44aa 100644
      case 0x10: case 0x11: case 0x13: break;
      case 0x14: case 0x15: run_vu(unit, imm * 8u, c); break;
      case 0x17: run_vu(unit, c.dry ? 0u : vu::tpc(unit), c); break;
+diff --git a/runtime/src/vu_micro.cpp b/runtime/src/vu_micro.cpp
+index 7815557..f3befe4 100644
+--- a/runtime/src/vu_micro.cpp
++++ b/runtime/src/vu_micro.cpp
+@@ -1179,9 +1179,25 @@ void run_fast(int n, std::uint32_t address) {
+     static const bool count = std::getenv("PS2_VU_COUNT") != nullptr;
+     static const bool record_jumps = !ps2::os::env("PS2_VU_RECORD").empty() || static_cast<bool>(g_options.on_vu_program);
+     if (count && ++calls % 20000 == 0) std::fprintf(stderr, "[vu1] %llu calls, %llu instructions\n", (unsigned long long)calls, (unsigned long long)total);
++    // PS2_VU_INTERPRET (interpreter only) and PS2_VU_NO_HANDOFF keep a started program in the interpreter to its end
++    static const bool no_handoff = std::getenv("PS2_VU_INTERPRET") != nullptr || std::getenv("PS2_VU_NO_HANDOFF") != nullptr;
++    std::uint32_t handoff = ~0u;
+     BranchView view;
+     for (std::uint32_t steps = 0; steps < 1'000'000; ++steps, ++total) {
+         if (!(steps & 0xFFu) && halted()) return;  // the window was closed: a program that does not end must not hold the close up for seconds
++        // MC1Recomp: the instruction after a jump (JR / JALR) and its delay slot: when VU1 code there is compiled, go on in it, the
++        // way a compiled program's own jump does (its dispatch: vu::interpret). The interpreter used to run every program it started
++        // to its end; Midnight Club starts two of its busiest programs with a branch in a branch's delay slot (which only the
++        // interpreter does), and they then call a subroutine and jump back to compiled code: 17 % of the emulation thread.
++        if (pc == handoff && n == 1 && !g_reference_dry && !g_capture && !no_handoff) {
++            handoff = ~0u;
++            if (lookup(pc)) {
++                pipe.flush_q(r);
++                r.tpc = pc;
++                interpret(1, pc);
++                return;
++            }
++        }
+         std::uint32_t lo, hi;
+         std::memcpy(&lo, u.code + pc, 4);
+         std::memcpy(&hi, u.code + pc + 4, 4);
+@@ -1212,6 +1228,7 @@ void run_fast(int n, std::uint32_t address) {
+             lower(u, lo, current, target, branch);
+             if (branch) npc = target;
+             if (branch && record_jumps && n == 1 && ((lo >> 25) == 0x24u || (lo >> 25) == 0x25u)) lookup(target);
++            if (branch && n == 1 && ((lo >> 25) == 0x24u || (lo >> 25) == 0x25u)) handoff = target;
+         }
+         u.branch_vi = nullptr;
+         view.commit(was, lo, !(hi & 0x80000000u));
 diff --git a/scripts/port.sh b/scripts/port.sh
 index 5e5e91c..5d0cbab 100755
 --- a/scripts/port.sh
