@@ -1493,7 +1493,7 @@ index a7a62ad..e10c068 100644
  void stats();
  
 diff --git a/runtime/src/gs/gpu/gs.wgsl b/runtime/src/gs/gpu/gs.wgsl
-index db25862..171611c 100644
+index db25862..8cf4a03 100644
 --- a/runtime/src/gs/gpu/gs.wgsl
 +++ b/runtime/src/gs/gpu/gs.wgsl
 @@ -20,6 +20,14 @@ override EXPLICIT_FMA: bool = false;
@@ -1539,7 +1539,65 @@ index db25862..171611c 100644
      return s;
  }
  
-@@ -815,6 +830,46 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
+@@ -719,12 +734,31 @@ fn tap32(s: Setup, page: u32, n: u32, k: u32) -> u32 {
+     return convert(s, raw & s.tf.mask);
+ }
+ 
+-fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
++// Which of a texel's SCALE x SCALE samples a texture read takes (MC1Recomp): the one under the texture position, measured from
++// texel `cell`'s corner (clamped into it for a bilinear neighbour). A texture the game drew itself (Midnight Club's car reflection
++// map, drawn each frame) holds different samples in a texel at SCALE > 1; reading the sample of the screen pixel's own position
++// instead (the old `k`) gave every textured pixel a SCALE-pixel cycle through them, a fine screen-door grid over the cars. A texture
++// sent from the EE has the same value in all of a texel's samples, so it reads exactly as before, and a copy laid on the screen
++// one to one still reads its own samples (the texture position moves with the screen position).
++fn sub_of(t: f32, cell: i32) -> u32 {
++    return u32(clamp(i32(floor((t - f32(cell)) * f32(SCALE))), 0, i32(SCALE) - 1));
++}
++
++// Only textures in a colour format the GS can draw into (32, 24 and 16 bit, read directly) take the sample under the texture
++// position; palette textures (indices sent from the EE) keep the screen sample, as before.
++fn drawn_format(s: Setup) -> bool {
++    return s.dec == 0xFFFFFFFFu && (s.tpsm == 0x00u || s.tpsm == 0x01u || s.tpsm == 0x02u || s.tpsm == 0x0Au);
++}
++
++fn sample(s: Setup, uin: f32, vin: f32, k_screen: u32) -> u32 {
+     if (rt_copy) {
+         return sample_scaled(s, uin, vin);
+     }
++    let drawn = drawn_format(s);
+     if (!has(s, F_BILINEAR)) {
+-        return fetch(s, i32(floor(uin)), i32(floor(vin)), k);
++        let cx = i32(floor(uin));
++        let cy = i32(floor(vin));
++        return fetch(s, cx, cy, select(k_screen, sub_of(vin, cy) * SCALE + sub_of(uin, cx), drawn));
+     }
+     let u = uin - 0.5;
+     let v = vin - 0.5;
+@@ -734,6 +768,11 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
+     let xb = texel_x(s, x0 + 1);
+     let ya = texel_y(s, y0);
+     let yb = texel_y(s, y0 + 1);
++    // the screen sample (as before) for a palette texture: kya + kxa etc. all come out k_screen
++    let kxa = select(k_screen % SCALE, sub_of(uin, x0), drawn);
++    let kxb = select(k_screen % SCALE, sub_of(uin, x0 + 1), drawn);
++    let kya = select(k_screen - k_screen % SCALE, sub_of(vin, y0) * SCALE, drawn);
++    let kyb = select(k_screen - k_screen % SCALE, sub_of(vin, y0 + 1) * SCALE, drawn);
+     if (s.dec == 0xFFFFFFFFu && s.tpsm <= 1u) {
+         // 32-bit colour: the page position and the position inside the page are separate sums of the x and the y part
+         let pxa = (xa >> 6u) * 8192u + s.tf.base;
+@@ -744,9 +783,9 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
+         let nxb = spread_x(xb);
+         let nya = spread_y(ya);
+         let nyb = spread_y(yb);
+-        return blend4(tap32(s, pxa + pya, nxa | nya, k), tap32(s, pxb + pya, nxb | nya, k), tap32(s, pxa + pyb, nxa | nyb, k), tap32(s, pxb + pyb, nxb | nyb, k), u - f32(x0), v - f32(y0));
++        return blend4(tap32(s, pxa + pya, nxa | nya, kya + kxa), tap32(s, pxb + pya, nxb | nya, kya + kxb), tap32(s, pxa + pyb, nxa | nyb, kyb + kxa), tap32(s, pxb + pyb, nxb | nyb, kyb + kxb), u - f32(x0), v - f32(y0));
+     }
+-    return blend4(fetch_at(s, xa, ya, k), fetch_at(s, xb, ya, k), fetch_at(s, xa, yb, k), fetch_at(s, xb, yb, k), u - f32(x0), v - f32(y0));
++    return blend4(fetch_at(s, xa, ya, kya + kxa), fetch_at(s, xb, ya, kya + kxb), fetch_at(s, xa, yb, kyb + kxa), fetch_at(s, xb, yb, kyb + kxb), u - f32(x0), v - f32(y0));
+ }
+ 
+ // Mip level n of the texture as a setup of its own (raster.cpp, level_setup): its base pointer and buffer width from the table, its size
+@@ -815,6 +854,50 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
      return Pick(u32(whole), lod - whole, linear);
  }
  
@@ -1564,7 +1622,11 @@ index db25862..171611c 100644
 +        let oy = (f32(j) + 0.5) / f32(ny) - 0.5;
 +        for (var i = 0u; i < nx; i = i + 1u) {
 +            let ox = (f32(i) + 0.5) / f32(nx) - 0.5;
-+            let c = fetch(s, i32(floor(u + gx.x * ox + gy.x * oy)), i32(floor(v + gx.y * ox + gy.y * oy)), k);
++            let tu = u + gx.x * ox + gy.x * oy;
++            let tv = v + gx.y * ox + gy.y * oy;
++            let cx = i32(floor(tu));
++            let cy = i32(floor(tv));
++            let c = fetch(s, cx, cy, select(k, sub_of(tv, cy) * SCALE + sub_of(tu, cx), drawn_format(s)));
 +            acc = acc + vec4<f32>(vec4<u32>(c & 0xFFu, (c >> 8u) & 0xFFu, (c >> 16u) & 0xFFu, c >> 24u));
 +        }
 +    }
@@ -1586,7 +1648,7 @@ index db25862..171611c 100644
  fn blend4(c00: u32, c10: u32, c01: u32, c11: u32, fx: f32, fy: f32) -> u32 {
      let a = vec4<f32>(vec4<u32>(c00 & 0xFFu, (c00 >> 8u) & 0xFFu, (c00 >> 16u) & 0xFFu, c00 >> 24u));
      let b = vec4<f32>(vec4<u32>(c10 & 0xFFu, (c10 >> 8u) & 0xFFu, (c10 >> 16u) & 0xFFu, c10 >> 24u));
-@@ -990,13 +1045,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -990,13 +1073,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
                      lv = nv * f32(1u << l.th);
                  }
              }
@@ -1604,7 +1666,7 @@ index db25862..171611c 100644
          let tr = i32(t & 0xFFu);
          let tg = i32((t >> 8u) & 0xFFu);
          let tb = i32((t >> 16u) & 0xFFu);
-@@ -1149,6 +1207,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1149,6 +1235,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
              g = g & 0xFF;
              b = b & 0xFF;
          }
@@ -1626,7 +1688,7 @@ index db25862..171611c 100644
          var out_a = u32(a & 0xFF);
          if (has(s, F_FBA)) {
              out_a = out_a | 0x80u;
-@@ -1165,7 +1238,7 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1165,7 +1266,7 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
  }
  
  const PRIM_WORDS: u32 = 28u;
@@ -1635,7 +1697,7 @@ index db25862..171611c 100644
  const MIP_WORDS: u32 = 8u;
  
  fn fat(i: u32) -> f32 {
-@@ -1198,6 +1271,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1198,6 +1299,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
      rt_copy = false;
      let kind = data[p + 1u];
      var at: Attr;
@@ -1643,7 +1705,7 @@ index db25862..171611c 100644
      switch kind {
          case 0u {
              let x0 = fat(p + 4u);
-@@ -1264,6 +1338,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1264,6 +1366,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
              let t2 = vertex_tex(p, 2u);
              var t = weighted4(t0, t1, t2, w0, w1, w2);
              t.w = bary1(t0.w, t1.w, t2.w, w1, w2);
@@ -1665,7 +1727,7 @@ index db25862..171611c 100644
              at = Attr(c.x, c.y, c.z, c.w, t.x, t.y, t.z, t.w, z_at(p, sum2(fat(p + 25u), fat(p + 26u), w1, w2)));
          }
          case 1u {
-@@ -1373,14 +1462,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1373,14 +1490,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
  
  @compute @workgroup_size(64)
  fn decode(@builtin(global_invocation_id) gid: vec3<u32>) {
