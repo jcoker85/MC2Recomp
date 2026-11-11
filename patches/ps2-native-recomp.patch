@@ -2043,6 +2043,41 @@ index 5dc3f1e..22ff750 100644
 +std::uint64_t last_decode_frame();
  
  }
+diff --git a/runtime/src/kernel.cpp b/runtime/src/kernel.cpp
+index 2f2f625..ca73942 100644
+--- a/runtime/src/kernel.cpp
++++ b/runtime/src/kernel.cpp
+@@ -472,12 +472,28 @@ void service(Cpu &c) {
+     if (g_in_handler) return;
+     run_alarms(c);
+     if (interrupts_enabled()) {
++        // Fair turns (MC1Recomp): a DMA transfer ends at once here, so a game that streams its drawing as a chain of small VIF1
++        // transfers, each ending in an interrupt whose handler starts the next, keeps channel 1 pending without a break. Taking
++        // the lowest pending channel every time (and the DMAC before the INTC) then left the SIF0 interrupt (channel 5, the IOP's
++        // replies) waiting for frames: Midnight Club, blocked in sceSifCallRpc for its rumble and sound, fell to about 10 frames
++        // a second while scraping a wall. On the console the transfers take time and the other interrupts get in between. So the
++        // pending DMAC channels take turns, starting after the one served last, and the DMAC and the INTC alternate.
++        static unsigned next_dmac = 0;
++        static bool intc_turn = false;
+         for (unsigned guard = 0; guard < 16; ++guard) {
+             const std::uint32_t pending = hw::intc_pending();
+             const std::uint32_t dmac = hw::dmac_pending();
+             if (!pending && !dmac) break;
+-            if (dmac) run_dmac(c, static_cast<unsigned>(std::countr_zero(dmac)));
+-            else run_intc(c, static_cast<unsigned>(std::countr_zero(pending)));
++            if (dmac && (!pending || !intc_turn)) {
++                const std::uint32_t rotated = ((dmac >> next_dmac) | (dmac << (10u - next_dmac))) & 0x3FFu;
++                const unsigned channel = (next_dmac + static_cast<unsigned>(std::countr_zero(rotated))) % 10u;
++                next_dmac = (channel + 1u) % 10u;
++                intc_turn = true;
++                run_dmac(c, channel);
++            } else {
++                intc_turn = false;
++                run_intc(c, static_cast<unsigned>(std::countr_zero(pending)));
++            }
+         }
+     }
+     // Threads start with kIdle as their return address, and the idle loop is the only other way to get
 diff --git a/runtime/src/system.cpp b/runtime/src/system.cpp
 index 199204d..68b2332 100644
 --- a/runtime/src/system.cpp
