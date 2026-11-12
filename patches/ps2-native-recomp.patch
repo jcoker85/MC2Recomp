@@ -199,7 +199,7 @@ index 3d53298..73c242a 100644
  constexpr int kLookCount = 6;
  constexpr int kDefaultLook = 5;
 diff --git a/host/window.cpp b/host/window.cpp
-index 6c7c2dc..e3355f1 100644
+index 6c7c2dc..b761612 100644
 --- a/host/window.cpp
 +++ b/host/window.cpp
 @@ -63,19 +63,18 @@ enum Button : std::uint16_t {
@@ -452,7 +452,22 @@ index 6c7c2dc..e3355f1 100644
      static bool stuck = false;  // the device took no sound for a second; the clock paces the game until it takes some again
      if (g_audio && !(stuck && g_pipe->full())) {
          // The audio device clock paces emulation: wait while more than ~80 ms of sound is waiting. The pipe times the game between
-@@ -1770,7 +1875,7 @@ bool open_window(bool fullscreen) {
+@@ -1743,6 +1848,14 @@ bool open_window(bool fullscreen) {
+     g_beep_on = no_beep.empty() || no_beep == "0";
+     g_pad_log = !pad_log.empty() && pad_log != "0";
+     if (!script.empty()) SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
++#ifdef _WIN32
++    // Draw in the screen's own pixels on a scaled display (125%, 150%...), as the "Override high DPI scaling behavior: Application"
++    // compatibility setting would. Without it Windows hands the program a smaller, made-up screen and stretches the picture up,
++    // which blurs it, fullscreen too. Per monitor: a window moved to a screen with another scale stays sharp. The window's size
++    // is then in real pixels (SDL_HINT_WINDOWS_DPI_SCALING stays off), as everything below already counts it. The environment
++    // variable SDL_WINDOWS_DPI_AWARENESS (unaware, system, permonitor) still overrides it.
++    SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
++#endif
+     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) != 0) {
+         std::fprintf(stderr, "SDL: %s\n", SDL_GetError());
+         return false;
+@@ -1770,7 +1883,7 @@ bool open_window(bool fullscreen) {
          ps2::os::set_env("PS2_SCALE", std::to_string(g_keys.scale));
          std::fprintf(stderr, "[video] resolution %dx from %s (scale = %d)\n", g_keys.scale, g_keys_path.c_str(), g_keys.scale);
      }
@@ -461,7 +476,28 @@ index 6c7c2dc..e3355f1 100644
      g_scale_next = g_scale_locked ? g_scale_now : (g_keys.scale >= 1 ? g_keys.scale : g_scale_now);
      Uint32 flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | (fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0u);
  #ifdef __APPLE__
-@@ -1791,6 +1896,19 @@ bool open_window(bool fullscreen) {
+@@ -1778,7 +1891,19 @@ bool open_window(bool fullscreen) {
+ #endif
+     g_game_title = ps2::os::env("PS2_WINDOW_TITLE");
+     const std::string initial_title = g_game_title.empty() ? g_speed_title : g_game_title + "   |   " + g_speed_title;
+-    g_window = SDL_CreateWindow(initial_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ps2::g_options.widescreen ? 1280 : 960, 720, flags);
++    // The window's first size: 720 lines at 100%, scaled with the screen (1080 at 150%) so that it looks the same size on any
++    // scale now that it counts real pixels, and kept inside the screen's usable area.
++    int win_w = ps2::g_options.widescreen ? 1280 : 960, win_h = 720;
++#ifdef _WIN32
++    float dpi = 0.0f;
++    SDL_Rect usable{};
++    if (SDL_GetDisplayDPI(0, nullptr, &dpi, nullptr) == 0 && dpi > 96.5f && SDL_GetDisplayUsableBounds(0, &usable) == 0) {
++        const float scale = std::min({dpi / 96.0f, usable.w * 0.9f / win_w, usable.h * 0.9f / win_h});
++        if (scale > 1.0f) win_w = static_cast<int>(win_w * scale), win_h = static_cast<int>(win_h * scale);
++        std::fprintf(stderr, "[window] display scale %.0f%%, window %dx%d\n", dpi / 96.0f * 100.0f, win_w, win_h);
++    }
++#endif
++    g_window = SDL_CreateWindow(initial_title.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, flags);
+     if (!g_window) {
+         std::fprintf(stderr, "SDL: %s\n", SDL_GetError());
+         return false;
+@@ -1791,6 +1916,19 @@ bool open_window(bool fullscreen) {
      if (SDL_GetWindowWMInfo(g_window, &wm_info) && wm_info.subsystem == SDL_SYSWM_WINDOWS) {
          ShowWindow(static_cast<HWND>(wm_info.info.win.window), SW_SHOWNORMAL);
          SetForegroundWindow(static_cast<HWND>(wm_info.info.win.window));
@@ -481,7 +517,7 @@ index 6c7c2dc..e3355f1 100644
      }
  #endif
      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
-@@ -1835,6 +1953,7 @@ bool open_window(bool fullscreen) {
+@@ -1835,6 +1973,7 @@ bool open_window(bool fullscreen) {
      }
      for (int i = 0; i < SDL_NumJoysticks(); ++i)
          if (SDL_IsGameController(i)) open_pad(i);
