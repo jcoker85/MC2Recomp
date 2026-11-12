@@ -116,6 +116,8 @@ static int g_count;
 static int g_sel;
 static int g_col;       /* COL_PLAY or COL_SETTINGS */
 static HANDLE g_child;
+static int g_child_game;      /* the game g_child runs */
+static DWORD g_child_start;   /* GetTickCount() when it started */
 static wchar_t g_dir[MAX_PATH];
 static wchar_t g_ini[MAX_PATH];
 static HFONT g_font_item, g_font_small, g_font_btn, g_font_head, g_font_set, g_font_tab;
@@ -882,8 +884,30 @@ typedef struct {
     char boot_text[128];
 } Launch;
 
+/* 1 when the file is a plain ISO image: the ISO 9660 volume descriptor ("\1CD001") at sector 16 of 2048 bytes. A CHD
+ * ("MComprHD"), a BIN with 2352-byte sectors or a CUE sheet has none there, and ps2run finds no files in it. */
+static int is_iso(const wchar_t* path) {
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    BYTE head[6] = { 0 };
+    DWORD got = 0;
+    LARGE_INTEGER at;
+    at.QuadPart = 16 * 2048;
+    int ok = SetFilePointerEx(h, at, NULL, FILE_BEGIN) && ReadFile(h, head, 6, &got, NULL) && got == 6 &&
+             head[0] == 1 && memcmp(head + 1, "CD001", 5) == 0;
+    CloseHandle(h);
+    return ok;
+}
+
+static const wchar_t k_not_iso[] =
+    L"%ls is not a plain .iso disc image, so the game cannot read it.\n\n"
+    L"A .chd can be turned into an .iso with MAME's chdman:\n"
+    L"    chdman extractdvd -i \"game.chd\" -o \"game.iso\"\n\n"
+    L"Then choose the .iso.";
+
 /* The player's disc image: a standard Open dialog, the choice kept in settings.ini. Returns 0 when cancelled. ps2run reads
- * plain ISO images (2048-byte sectors); a CHD or BIN/CUE has to be turned into one first (see README). */
+ * plain ISO images (2048-byte sectors); a CHD or BIN/CUE has to be turned into one first (see README), so anything else is
+ * refused here with that step and the dialog opens again. */
 static int choose_disc(HWND hwnd, Game* g) {
     wchar_t file[MAX_PATH];
     wcsncpy(file, g->disc, MAX_PATH - 1);
@@ -898,7 +922,14 @@ static int choose_disc(HWND hwnd, Game* g) {
     ofn.nMaxFile = MAX_PATH;
     ofn.lpstrTitle = title;
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
-    if (!GetOpenFileNameW(&ofn)) return 0;
+    for (;;) {
+        if (!GetOpenFileNameW(&ofn)) return 0;
+        if (is_iso(file)) break;
+        const wchar_t* name = wcsrchr(file, L'\\');
+        wchar_t msg[1024];
+        swprintf(msg, 1024, k_not_iso, name ? name + 1 : file);
+        MessageBoxW(hwnd, msg, g->title, MB_ICONERROR);
+    }
     wcsncpy(g->disc, file, MAX_PATH - 1);
     g->disc[MAX_PATH - 1] = 0;
     WritePrivateProfileStringW(g->id, L"disc", g->disc, g_ini);
@@ -1020,7 +1051,16 @@ static void launch(HWND hwnd) {
     if (g_child || g_sel < 0 || g_sel >= g_count) return;
     Game* g = &g_games[g_sel];
     if (!g->available) { MessageBeep(MB_ICONWARNING); return; }
-    if ((!g->disc[0] || !exists(g->disc)) && !choose_disc(hwnd, g)) return;
+    /* a disc image that is missing, or not an ISO (a .chd kept from an older launcher that took any file), is asked again */
+    if (g->disc[0] && exists(g->disc) && !is_iso(g->disc)) {
+        const wchar_t* name = wcsrchr(g->disc, L'\\');
+        wchar_t msg[1024];
+        swprintf(msg, 1024, k_not_iso, name ? name + 1 : g->disc);
+        MessageBoxW(hwnd, msg, g->title, MB_ICONERROR);
+        if (!choose_disc(hwnd, g)) return;
+    } else if ((!g->disc[0] || !exists(g->disc)) && !choose_disc(hwnd, g)) {
+        return;
+    }
     Launch L;
     wchar_t err[512];
     if (!prepare(g, &L, err, 512)) {
@@ -1036,6 +1076,8 @@ static void launch(HWND hwnd) {
     }
     CloseHandle(pi.hThread);
     g_child = pi.hProcess;
+    g_child_game = g_sel;
+    g_child_start = GetTickCount();
     ShowWindow(hwnd, SW_HIDE);
 }
 
@@ -1948,13 +1990,54 @@ static void capture_from_pad(HWND hwnd, WORD now, WORD trig) {
         if (fresh & bits[i].bit) { capture_pad(hwnd, bits[i].word); return; }
 }
 
+/* The game stopped with an error soon after Play (a disc image it cannot read, a missing file): instead of the launcher just
+ * coming back, say so with the last line of the game's newest log (<toolkit>\games\<id>\logs\ps2run_*.log). */
+static void report_failed_start(HWND hwnd, Game* g, DWORD code) {
+    wchar_t pattern[MAX_PATH], newest[MAX_PATH] = L"", path[MAX_PATH];
+    swprintf(pattern, MAX_PATH, L"%ls\\games\\%ls\\logs\\ps2run_*.log", g->tool, g->id);
+    WIN32_FIND_DATAW fd;
+    FILETIME best = { 0 };
+    HANDLE f = FindFirstFileW(pattern, &fd);
+    if (f != INVALID_HANDLE_VALUE) {
+        do {
+            if (CompareFileTime(&fd.ftLastWriteTime, &best) > 0) { best = fd.ftLastWriteTime; wcsncpy(newest, fd.cFileName, MAX_PATH - 1); }
+        } while (FindNextFileW(f, &fd));
+        FindClose(f);
+    }
+    wchar_t last[512] = L"";
+    if (newest[0]) {
+        swprintf(path, MAX_PATH, L"%ls\\games\\%ls\\logs\\%ls", g->tool, g->id, newest);
+        FILE* in = _wfopen(path, L"rb");
+        if (in) {
+            char line[1024], keep[1024] = "";
+            while (fgets(line, sizeof line, in)) {
+                line[strcspn(line, "\r\n")] = 0;
+                if (line[0]) strcpy(keep, line);
+            }
+            fclose(in);
+            MultiByteToWideChar(CP_UTF8, 0, keep, -1, last, 512);
+        }
+    }
+    /* The usual cause is the disc image (another game, a damaged copy), so the way out is offered right here: without it the
+     * only other place to change it is Settings > Disc Image, and every Play would stop the same way. */
+    wchar_t msg[2048];
+    int n = last[0] ? swprintf(msg, 2048, L"The game stopped as it started (code %lu):\n\n%ls\n\nThe whole log is %ls", (unsigned long)code, last, path)
+                    : swprintf(msg, 2048, L"The game stopped as it started (code %lu).", (unsigned long)code);
+    if (n > 0)
+        swprintf(msg + n, 2048 - n, L"\n\nThis is usually the disc image: is it %ls (USA)?\n\nChoose a different disc image?\n(%ls)", g->title, g->disc);
+    if (MessageBoxW(hwnd, msg, g->title, MB_ICONERROR | MB_YESNO) == IDYES) choose_disc(hwnd, g);
+}
+
 static void tick(HWND hwnd) {
     if (g_child) {
         if (WaitForSingleObject(g_child, 0) == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(g_child, &code);
             CloseHandle(g_child);
             g_child = NULL;
             ShowWindow(hwnd, SW_SHOW);
             SetForegroundWindow(hwnd);
+            if (code != 0 && GetTickCount() - g_child_start < 15000) report_failed_start(hwnd, &g_games[g_child_game], code);
         }
         return;
     }
