@@ -99,7 +99,8 @@ finished build. Cover art is downloaded at run time from
   - `peds60.py` / `peds60.pnach`: the pedestrian animation speed fix at 60 FPS.
   - `menus43.txt`: the game state that tells a race from a menu, for Menu/Movie Aspect Ratio.
 - `patches/ps2-native-recomp.patch`: this project's changes to the toolkit: the MC2 HUD hooks and fixes the game needed to
-  run, dithering, texture filtering, smooth distant textures, FSR, the 4:3 menus switch, and faster texture uploads.
+  run, dithering, texture filtering, smooth distant textures, FSR, the 4:3 menus switch, and faster texture uploads
+  (drawing runs keep going over texture uploads, from MC1Recomp; `PS2_RENAME=0` turns that off, for comparison).
 - `ps2-native-recomp/`: the toolkit, as a git submodule.
 - `tools/`: the build script, the release packaging script and the icon script.
 
