@@ -102,6 +102,8 @@ typedef struct {
     wchar_t opts[MAX_PATH];     /* <id>-options beside the toolkit folder */
     wchar_t id[32];
     wchar_t elf[64];
+    DWORD crc;                  /* CRC-32 of the ELF on the right disc (games.txt, optional) */
+    int has_crc;
     wchar_t cover_name[96];     /* libretro-thumbnails box art name, or empty */
     wchar_t disc[MAX_PATH];     /* the player's disc image (settings.ini disc=), or empty */
     int available;              /* ps2run.exe is built */
@@ -625,6 +627,8 @@ static void load_games(void) {
         wcsncpy(g->subtitle, sub, 127);
         wcsncpy(g->cover_name, cover, 95);
         wcsncpy(g->id, id, 31);
+        wchar_t* crc = next_field(elf);   /* optional; splits it off the ELF name */
+        if (crc && *crc) g->crc = (DWORD)wcstoul(crc, NULL, 16), g->has_crc = 1;
         wcsncpy(g->elf, elf, 63);
 
         wchar_t joined[MAX_PATH];
@@ -884,26 +888,127 @@ typedef struct {
     char boot_text[128];
 } Launch;
 
-/* 1 when the file is a plain ISO image: the ISO 9660 volume descriptor ("\1CD001") at sector 16 of 2048 bytes. A CHD
- * ("MComprHD"), a BIN with 2352-byte sectors or a CUE sheet has none there, and ps2run finds no files in it. */
-static int is_iso(const wchar_t* path) {
-    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) return 0;
-    BYTE head[6] = { 0 };
+/* --- the player's disc image -------------------------------------------------
+ * ps2run reads plain ISO images (2048-byte sectors) and runs the program file on the disc that the recompiled code was made
+ * from, byte for byte. Any other disc (another game, another region or release, a damaged copy) gets past the start and
+ * then shows a black screen for good, with nothing to tell the player why. So the disc is checked before it is used, from
+ * the ISO 9660 file system: the game's program file (games.txt: ELF name, e.g. SLUS_202.09) has to be in the root folder,
+ * and when games.txt gives its CRC-32 too, the file has to match it. A CHD ("MComprHD"), a raw BIN with 2352-byte sectors
+ * or a CUE sheet has no ISO 9660 volume descriptor at sector 16 and is turned away with the chdman step. */
+static int read_at(HANDLE h, ULONGLONG at, void* buf, DWORD len) {
+    LARGE_INTEGER li;
+    li.QuadPart = (LONGLONG)at;
     DWORD got = 0;
-    LARGE_INTEGER at;
-    at.QuadPart = 16 * 2048;
-    int ok = SetFilePointerEx(h, at, NULL, FILE_BEGIN) && ReadFile(h, head, 6, &got, NULL) && got == 6 &&
-             head[0] == 1 && memcmp(head + 1, "CD001", 5) == 0;
-    CloseHandle(h);
-    return ok;
+    return SetFilePointerEx(h, li, NULL, FILE_BEGIN) && ReadFile(h, buf, len, &got, NULL) && got == len;
 }
+
+static DWORD crc32_update(DWORD crc, const BYTE* p, size_t n) {
+    static DWORD table[256];
+    if (!table[1])
+        for (DWORD i = 0; i < 256; i++) {
+            DWORD c = i;
+            for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            table[i] = c;
+        }
+    crc = ~crc;
+    while (n--) crc = table[(crc ^ *p++) & 0xFF] ^ (crc >> 8);
+    return ~crc;
+}
+
+/* 1 when name (a directory record's "NAME.EXT;1") is want, ignoring case and the ";1" version. */
+static int iso_name_is(const BYTE* name, int len, const char* want) {
+    int i = 0;
+    for (; i < len && name[i] != ';'; i++)
+        if (!want[i] || towlower(name[i]) != towlower((unsigned char)want[i])) return 0;
+    return want[i] == 0;
+}
+
+typedef struct { DWORD lba, size; int found; } IsoFile;
 
 static const wchar_t k_not_iso[] =
     L"%ls is not a plain .iso disc image, so the game cannot read it.\n\n"
     L"A .chd can be turned into an .iso with MAME's chdman:\n"
     L"    chdman extractdvd -i \"game.chd\" -o \"game.iso\"\n\n"
     L"Then choose the .iso.";
+
+/* 1 when path is a disc image of this game that the build can run; else 0 with the reason for the player in msg. */
+static int check_disc(const Game* g, const wchar_t* path, wchar_t* msg, size_t msgn) {
+    const wchar_t* slash = wcsrchr(path, L'\\');
+    const wchar_t* file = slash ? slash + 1 : path;
+    const wchar_t* game = g->cover_name[0] ? g->cover_name : g->title;   /* "Midnight Club II (USA)" */
+    HANDLE h = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        swprintf(msg, msgn, L"%ls could not be opened (error %lu).", file, GetLastError());
+        return 0;
+    }
+    static BYTE sector[2048];
+    if (!read_at(h, 16 * 2048, sector, 2048) || sector[0] != 1 || memcmp(sector + 1, "CD001", 5) != 0) {
+        CloseHandle(h);
+        swprintf(msg, msgn, k_not_iso, file);
+        return 0;
+    }
+    /* the root folder's directory record sits at byte 156 of the primary volume descriptor */
+    DWORD root_lba = *(const DWORD*)(sector + 156 + 2), root_size = *(const DWORD*)(sector + 156 + 10);
+    if (root_size > 1024 * 1024) root_size = 1024 * 1024;
+    char elf[64];
+    WideCharToMultiByte(CP_ACP, 0, g->elf, -1, elf, sizeof elf, NULL, NULL);
+    IsoFile program = { 0 }, cnf = { 0 };
+    for (DWORD off = 0; off < root_size; off += 2048) {
+        if (!read_at(h, ((ULONGLONG)root_lba << 11) + off, sector, 2048)) break;
+        for (DWORD pos = 0; pos < 2048 && sector[pos] >= 34 && pos + sector[pos] <= 2048; pos += sector[pos]) {
+            const BYTE* r = sector + pos;
+            if (r[25] & 2) continue;  /* a folder */
+            IsoFile* hit = iso_name_is(r + 33, r[32], elf) ? &program : iso_name_is(r + 33, r[32], "SYSTEM.CNF") ? &cnf : NULL;
+            if (hit) hit->lba = *(const DWORD*)(r + 2), hit->size = *(const DWORD*)(r + 10), hit->found = 1;
+        }
+    }
+    if (!program.found) {
+        /* name what the disc is instead, from its SYSTEM.CNF ("BOOT2 = cdrom0:\SLES_123.45;1") */
+        wchar_t other[80] = L"";
+        char text[2049] = "";
+        DWORD n = cnf.size < 2048 ? cnf.size : 2048;
+        if (cnf.found && n && read_at(h, (ULONGLONG)cnf.lba << 11, text, n)) {
+            text[n] = 0;
+            char* b = strstr(text, "cdrom0:\\");
+            if (!b) b = strstr(text, "cdrom:\\");
+            if (b) {
+                b = strchr(b, '\\') + 1;
+                size_t len = strcspn(b, ";\r\n");
+                if (len > 60) len = 60;
+                b[len] = 0;
+                swprintf(other, 80, L"%hs", b);
+            }
+        }
+        CloseHandle(h);
+        if (other[0])
+            swprintf(msg, msgn, L"%ls is not %ls: it holds another game (%ls).\n\nThe game here is made from %ls's %ls and runs "
+                     L"on that disc only. Choose your disc image of it.", file, game, other, game, g->elf);
+        else
+            swprintf(msg, msgn, L"%ls is not %ls: there is no PS2 game on it.\n\nThe game here is made from %ls's %ls and runs "
+                     L"on that disc only. Choose your disc image of it.", file, game, game, g->elf);
+        return 0;
+    }
+    if (g->has_crc) {
+        static BYTE chunk[64 * 1024];
+        DWORD crc = 0, left = program.size;
+        ULONGLONG at = (ULONGLONG)program.lba << 11;
+        int ok = 1;
+        while (ok && left) {
+            DWORD n = left < sizeof chunk ? left : (DWORD)sizeof chunk;
+            ok = read_at(h, at, chunk, n);
+            if (ok) crc = crc32_update(crc, chunk, n), at += n, left -= n;
+        }
+        if (!ok || crc != g->crc) {
+            CloseHandle(h);
+            swprintf(msg, msgn, L"%ls has %ls on it, but not the version the game here is made from, so it would stop at a "
+                     L"black screen.\n\nIt may be another release of %ls, or a damaged or modified copy. Choose an untouched "
+                     L"disc image of %ls.", file, g->elf, g->title, game);
+            return 0;
+        }
+    }
+    CloseHandle(h);
+    return 1;
+}
 
 /* The player's disc image: a standard Open dialog, the choice kept in settings.ini. Returns 0 when cancelled. ps2run reads
  * plain ISO images (2048-byte sectors); a CHD or BIN/CUE has to be turned into one first (see README), so anything else is
@@ -924,10 +1029,8 @@ static int choose_disc(HWND hwnd, Game* g) {
     ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
     for (;;) {
         if (!GetOpenFileNameW(&ofn)) return 0;
-        if (is_iso(file)) break;
-        const wchar_t* name = wcsrchr(file, L'\\');
         wchar_t msg[1024];
-        swprintf(msg, 1024, k_not_iso, name ? name + 1 : file);
+        if (check_disc(g, file, msg, 1024)) break;
         MessageBoxW(hwnd, msg, g->title, MB_ICONERROR);
     }
     wcsncpy(g->disc, file, MAX_PATH - 1);
@@ -1051,11 +1154,10 @@ static void launch(HWND hwnd) {
     if (g_child || g_sel < 0 || g_sel >= g_count) return;
     Game* g = &g_games[g_sel];
     if (!g->available) { MessageBeep(MB_ICONWARNING); return; }
-    /* a disc image that is missing, or not an ISO (a .chd kept from an older launcher that took any file), is asked again */
-    if (g->disc[0] && exists(g->disc) && !is_iso(g->disc)) {
-        const wchar_t* name = wcsrchr(g->disc, L'\\');
-        wchar_t msg[1024];
-        swprintf(msg, 1024, k_not_iso, name ? name + 1 : g->disc);
+    /* a disc image that is missing, or one the game cannot run (a .chd or another game's ISO, kept from an older launcher
+     * that took any file), is asked again */
+    wchar_t msg[1024];
+    if (g->disc[0] && exists(g->disc) && !check_disc(g, g->disc, msg, 1024)) {
         MessageBoxW(hwnd, msg, g->title, MB_ICONERROR);
         if (!choose_disc(hwnd, g)) return;
     } else if ((!g->disc[0] || !exists(g->disc)) && !choose_disc(hwnd, g)) {
