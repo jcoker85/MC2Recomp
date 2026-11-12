@@ -26,6 +26,7 @@ SLUS_*
 
 # Build outputs
 /MC2Recomp.exe
+/MC2Recomp.exe.old
 /games.txt
 /hub/build/
 /dist/
@@ -52,5 +53,3 @@ Thumbs.db
 .DS_Store
 __pycache__/
 
-# The launcher icon (Midnight Club II icon by RAZELIGHT, SteamGridDB): downloaded by tools/make_icon.ps1, not ours to redistribute
-/hub/icon/

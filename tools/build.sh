@@ -7,7 +7,7 @@
 # 2. sets up the toolkit's build tools (its scripts/setup.sh);
 # 3. translates the game's code from your disc into C++ and builds the game program (the toolkit's scripts/port.sh), with the
 #    switchable widescreen / 60 fps patches (mc2-options/toggles.txt) and this project's HUD and pedestrian patches;
-# 4. builds the launcher, MC2Recomp.exe, in this folder, with its icon (tools/make_icon.ps1 downloads it from SteamGridDB).
+# 4. builds the launcher, MC2Recomp.exe, in this folder (its icon is downloaded by the launcher itself on its first start).
 # Everything taken from the disc stays in ps2-native-recomp/games and ps2-native-recomp/generated, which git ignores.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -39,7 +39,6 @@ bash scripts/port.sh mc2 "$iso" --native-only \
   --pnach ../mc2-options/peds60.pnach --pnach-section "Peds 60 FPS"
 
 cd "$here"
-powershell -NoProfile -ExecutionPolicy Bypass -File tools/make_icon.ps1
 cmd //c "hub\\build.cmd"
 echo
 echo "Done: run MC2Recomp.exe, press Play and choose your disc image."

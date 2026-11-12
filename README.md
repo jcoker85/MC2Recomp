@@ -74,7 +74,7 @@ bash tools/build.sh "/c/Games/Midnight Club II (USA).iso"
 2. sets up the toolkit's build tools;
 3. translates the game's code from your disc into C++ and builds the game program (`ps2run.exe`), with the patches in
    `mc2-options/`;
-4. downloads the launcher's icon (`tools/make_icon.ps1`, below) and builds the launcher, `MC2Recomp.exe`.
+4. builds the launcher, `MC2Recomp.exe`.
 
 The first build takes a while. Code the first build did not see is translated while you play and kept for next time.
 
@@ -86,12 +86,15 @@ machine from your own disc and stay in `ps2-native-recomp/generated` and `ps2-na
 game runs, it reads its data from your disc image.
 
 Release zips contain the built programs: the launcher and the game program, which includes a machine-translated build of
-the game's own code. They contain no disc data, game assets or cover art; the launcher's icon (credited below) is built into `MC2Recomp.exe`. `tools/package_release.sh` makes one from a
+the game's own code. They contain no disc data, game assets, cover art or the launcher's icon (credited below), which the launcher downloads on its first start. `tools/package_release.sh` makes one from a
 finished build. Cover art is downloaded at run time from
 [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails) and is not redistributed here.
 
-- `hub/`: the launcher (`hub.c`, ported from the TwistedMetal1234Recomp menu) and its build files. Its icon is not in the
-  repository: `tools/make_icon.ps1` downloads it at build time (any square PNG at `hub/icon/hub.png` is used instead).
+- `hub/`: the launcher (`hub.c`, ported from the TwistedMetal1234Recomp menu) and its build files. It has no icon built in:
+  on its first start it downloads its icon into `covers/icon.ico`, beside the box art, and its window and the game window
+  show it from there (a square PNG put at `covers/icon.png` is used instead). It also writes the icon into its own
+  `MC2Recomp.exe` (it renames itself to `MC2Recomp.exe.old` and puts a copy with the icon in its place), so Explorer and
+  shortcuts show it from the next start; the release zip's launcher has none.
 - `mc2-options/`:
   - `toggles.txt`: the PCSX2 community patches (Widescreen 16:9 by Arapapa, 60 FPS by PeterDelta) as instructions that
     switch at run time, plus this project's fix for the speed after a respawn.
@@ -102,7 +105,7 @@ finished build. Cover art is downloaded at run time from
   run, dithering, texture filtering, smooth distant textures, FSR, the 4:3 menus switch, and faster texture uploads
   (drawing runs keep going over texture uploads, from MC1Recomp; `PS2_RENAME=0` turns that off, for comparison).
 - `ps2-native-recomp/`: the toolkit, as a git submodule.
-- `tools/`: the build script, the release packaging script and the icon script.
+- `tools/`: the build script and the release packaging script.
 
 ## Credits
 
@@ -114,7 +117,7 @@ finished build. Cover art is downloaded at run time from
   written after AMD's published shaders.
 - Box art in the launcher: [libretro-thumbnails](https://github.com/libretro-thumbnails/libretro-thumbnails).
 - The launcher and game window icon: [Midnight Club II icon by RAZELIGHT](https://www.steamgriddb.com/icon/90267) on
-  SteamGridDB, downloaded at build time.
+  SteamGridDB, downloaded by the launcher on its first start.
 
 ## License
 

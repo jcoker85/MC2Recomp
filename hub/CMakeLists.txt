@@ -10,11 +10,8 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 set(_root "${CMAKE_CURRENT_SOURCE_DIR}/..")
+# No icon is built in: the launcher downloads it on its first start (hub.c, fetch_icon); it is not ours to redistribute.
 set(_sources hub.c)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icon/hub.ico")
-    enable_language(RC)
-    list(APPEND _sources hub.rc)
-endif()
 add_executable(MC2Recomp WIN32 ${_sources})
 target_compile_definitions(MC2Recomp PRIVATE UNICODE _UNICODE)
 target_link_options(MC2Recomp PRIVATE -municode -static)
