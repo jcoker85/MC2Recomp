@@ -847,7 +847,7 @@ index ae5f346..b4c8663 100644
 +    return vec4<f32>(clamp(pix, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
 +}
 diff --git a/runtime/src/gs/gpu/gpu.cpp b/runtime/src/gs/gpu/gpu.cpp
-index 8f3e3f7..0888456 100644
+index 8f3e3f7..65d0079 100644
 --- a/runtime/src/gs/gpu/gpu.cpp
 +++ b/runtime/src/gs/gpu/gpu.cpp
 @@ -45,7 +45,7 @@ constexpr std::uint32_t kParamStride = 256;
@@ -1344,7 +1344,19 @@ index 8f3e3f7..0888456 100644
      g_copy_words = (1u << 20) * g_scale * g_scale;
      if (const int tile = std::atoi(os::env("PS2_TILE").c_str()); tile == 4 || tile == 8 || tile == 16) g_tile = tile;
      g_tiles_per_row = (2048 * static_cast<int>(g_scale) + g_tile - 1) / g_tile;
-@@ -2346,10 +2666,12 @@ bool init(Mode m) {
+@@ -2338,7 +2658,10 @@ bool init(Mode m) {
+     g_tile_fill.assign(static_cast<std::size_t>(g_tiles_per_row) * g_tiles_per_row + 8, 0);
+     g_touched.assign(g_tile_count.size() + 8, 0);
+     g_field_words = (1u << 19) * g_scale * g_scale;
+-    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
++    // PS2_DEPTH_FRAC=1 (DEPTH_FRAC in gs.wgsl): the fractions of 16-bit depths are kept after the emulated memory, so the buffer is twice as large
++    const bool depth_frac = os::env("PS2_DEPTH_FRAC") == "1";
++    if (depth_frac) std::fprintf(stderr, "[gpu] 16-bit depth keeps its fractions (PS2_DEPTH_FRAC=1)\n");
++    g_vram = make_buffer(static_cast<std::uint64_t>(kMemorySize) * g_scale * g_scale * (depth_frac ? 2u : 1u), WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
+     std::vector<std::uint32_t> tables;
+     swizzle_tables(tables);
+     g_swizzle = tables;
+@@ -2346,10 +2669,12 @@ bool init(Mode m) {
      g_tables = make_buffer(tables.size() * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopyDst);
      wgpuQueueWriteBuffer(g_queue, g_tables, 0, tables.data(), tables.size() * 4);
      g_clut = make_buffer(static_cast<std::uint64_t>(kClutSlots) * kClutEntries * 4, WGPUBufferUsage_Storage | WGPUBufferUsage_CopySrc | WGPUBufferUsage_CopyDst);
@@ -1358,35 +1370,38 @@ index 8f3e3f7..0888456 100644
      g_cache_copy.assign(kCacheWords, 0);
      g_readback = make_buffer(static_cast<std::uint64_t>(g_copy_words) * 4, WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst);
      if (g_timestamps) {
-@@ -2413,6 +2735,7 @@ bool init(Mode m) {
+@@ -2413,6 +2738,8 @@ bool init(Mode m) {
      const bool has_tile = shader_text.empty() || shader_text.find("override TILE") != std::string::npos;
      const bool has_fma = shader_text.empty() || shader_text.find("override EXPLICIT_FMA") != std::string::npos;
      const bool has_mip = shader_text.empty() || shader_text.find("override HAS_MIP") != std::string::npos;
 +    const bool has_ss = shader_text.empty() || shader_text.find("override TEX_SS") != std::string::npos;  // smooth distant textures (PS2_TEX_SS)
++    const bool has_df = shader_text.empty() || shader_text.find("override DEPTH_FRAC") != std::string::npos;  // depth fractions (PS2_DEPTH_FRAC)
      const int scale = static_cast<int>(g_scale), tile = g_tile;
      // `mip`: the draw program that reads mipmap levels (HAS_MIP in gs.wgsl); without it the program is the plain one
      auto make_pipeline = [=](int entry, bool mip) {
-@@ -2420,7 +2743,7 @@ bool init(Mode m) {
+@@ -2420,7 +2747,7 @@ bool init(Mode m) {
          cd.layout = g_pipeline_layout;
          cd.compute.module = module;
          cd.compute.entryPoint = view(kEntryPoints[entry]);
 -        WGPUConstantEntry constants[4] = {WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT};
-+        WGPUConstantEntry constants[5] = {WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT};
++        WGPUConstantEntry constants[6] = {WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT, WGPU_CONSTANT_ENTRY_INIT};
          constants[0].key = view("SCALE");
          constants[0].value = static_cast<double>(scale);
          constants[1].key = view("TILE");
-@@ -2429,7 +2752,9 @@ bool init(Mode m) {
+@@ -2429,7 +2756,11 @@ bool init(Mode m) {
          constants[2].value = explicit_fma ? 1.0 : 0.0;
          constants[3].key = view("HAS_MIP");
          constants[3].value = mip ? 1.0 : 0.0;
 -        cd.compute.constantCount = has_tile ? (has_fma ? (has_mip ? 4 : 3) : 2) : 1;
 +        constants[4].key = view("TEX_SS");
 +        constants[4].value = os::env("PS2_TEX_SS") == "1" ? 1.0 : 0.0;
-+        cd.compute.constantCount = has_tile ? (has_fma ? (has_mip ? (has_ss ? 5 : 4) : 3) : 2) : 1;
++        constants[5].key = view("DEPTH_FRAC");
++        constants[5].value = depth_frac ? 1.0 : 0.0;
++        cd.compute.constantCount = has_tile ? (has_fma ? (has_mip ? (has_ss ? (has_df ? 6 : 5) : 4) : 3) : 2) : 1;
          cd.compute.constants = constants;
          return wgpuDeviceCreateComputePipeline(g_device, &cd);
      };
-@@ -2794,6 +3119,8 @@ void load_clut(std::uint64_t tex0, std::uint64_t texclut) {
+@@ -2794,6 +3125,8 @@ void load_clut(std::uint64_t tex0, std::uint64_t texclut) {
      std::memcpy(op.rec, rec, sizeof rec);
      op.range = csm ? region(cbp, cbw, cpsm, static_cast<int>(cou * 16), static_cast<int>(cov), static_cast<int>(cou * 16 + 255), static_cast<int>(cov))
                     : region(cbp, 1, cpsm, 0, 0, 15, 15);
@@ -1395,7 +1410,7 @@ index 8f3e3f7..0888456 100644
      queue_pre(op);
      g_clut_slot = next;
      ++g_clut_loads;
-@@ -3083,6 +3410,56 @@ bool attach_surface(const SurfaceTarget &target) {
+@@ -3083,6 +3416,56 @@ bool attach_surface(const SurfaceTarget &target) {
      rd.vertex.entryPoint = view("vs");
      rd.fragment = &fragment;
      g_blit = wgpuDeviceCreateRenderPipeline(g_device, &rd);
@@ -1452,7 +1467,7 @@ index 8f3e3f7..0888456 100644
      wgpuShaderModuleRelease(module);
      wgpuPipelineLayoutRelease(pipeline_layout);
      g_blit_params = make_buffer(32, WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst);
-@@ -3212,6 +3589,76 @@ std::uint32_t display_params(const DisplaySource &src, std::uint32_t scratch_at)
+@@ -3212,6 +3595,76 @@ std::uint32_t display_params(const DisplaySource &src, std::uint32_t scratch_at)
                          o.active ? 1u : 0u, o.fbp, o.fbw, o.psm, o.dbx, o.dby, static_cast<std::uint32_t>(o.x), static_cast<std::uint32_t>(o.y), o.width, o.height});
  }
  
@@ -1529,7 +1544,7 @@ index 8f3e3f7..0888456 100644
  bool present(const DisplaySource &src) {
      if (!g_surface) return false;
      static PresentLog log;
-@@ -3219,13 +3666,18 @@ bool present(const DisplaySource &src) {
+@@ -3219,13 +3672,18 @@ bool present(const DisplaySource &src) {
      if (log.on) log.mark = PresentLog::Clock::now();
      flush_all();
      if (log.on) log.lap(log.flush);
@@ -1553,7 +1568,7 @@ index 8f3e3f7..0888456 100644
      const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
      const std::uint32_t blit[8] = {src.width * g_scale, src.height * g_scale, current, previous, blend ? 1u : 0u, static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options()};
      wgpuQueueWriteBuffer(g_queue, g_blit_params, 0, blit, sizeof blit);
-@@ -3256,6 +3708,7 @@ bool present(const DisplaySource &src) {
+@@ -3256,6 +3714,7 @@ bool present(const DisplaySource &src) {
      const auto submit_from = PresentLog::Clock::now();
      ps2::hitch::enter_present_stage("submitting the picture (submit)");
      submit(target);
@@ -1561,7 +1576,7 @@ index 8f3e3f7..0888456 100644
      if (log.on) log.lap(log.submit);
  #ifndef __EMSCRIPTEN__
      ps2::hitch::enter_present_stage("presenting the picture (wgpuSurfacePresent)");
-@@ -3405,7 +3858,7 @@ bool present_again() {
+@@ -3405,7 +3864,7 @@ bool present_again() {
      // the same picture as the last present (its fields are still in the scratch buffer: the game draws nothing while it waits), with the
      // window's size and the picture look of now
      const float sw = static_cast<float>(g_surface_width), sh = static_cast<float>(g_surface_height);
@@ -1570,7 +1585,7 @@ index 8f3e3f7..0888456 100644
      const float vw = std::min(sw, sh * aspect), vh = vw / aspect;
      const std::uint32_t tail[3] = {static_cast<std::uint32_t>(vw), static_cast<std::uint32_t>(vh), ps2::video_options()};
      wgpuQueueWriteBuffer(g_queue, g_blit_params, 20, tail, sizeof tail);
-@@ -3504,14 +3957,59 @@ bool display_async(const DisplaySource &src, std::vector<std::uint32_t> &rgba, s
+@@ -3504,14 +3963,59 @@ bool display_async(const DisplaySource &src, std::vector<std::uint32_t> &rgba, s
  
  bool display(const DisplaySource &src, std::vector<std::uint32_t> &rgba, std::uint32_t &width, std::uint32_t &height) {
      flush_all();
@@ -1661,10 +1676,10 @@ index a7a62ad..e10c068 100644
  void stats();
  
 diff --git a/runtime/src/gs/gpu/gs.wgsl b/runtime/src/gs/gpu/gs.wgsl
-index db25862..f567ebf 100644
+index db25862..f62ee36 100644
 --- a/runtime/src/gs/gpu/gs.wgsl
 +++ b/runtime/src/gs/gpu/gs.wgsl
-@@ -20,6 +20,14 @@ override EXPLICIT_FMA: bool = false;
+@@ -20,6 +20,22 @@ override EXPLICIT_FMA: bool = false;
  // HAS_MIP = true (built in the background, used by the batches that carry a mipmap table). With false every use below folds away.
  override HAS_MIP: bool = false;
  
@@ -1673,13 +1688,21 @@ index db25862..f567ebf 100644
 +// bilinear tap there picks a different window each frame as the view moves (crawling rows of lit windows, moire). The PS2
 +// samples it that way too; this is an enhancement, the launcher's Smooth distant textures.
 +override TEX_SS: bool = false;
++// DEPTH_FRAC (PS2_DEPTH_FRAC=1, off by default: not what the PS2 does): a 16-bit depth buffer keeps 8 bits of each depth's fraction
++// beside it, and the depth test compares depth and fraction together. The PS2 drops the fraction, so two surfaces drawn on top of
++// each other far away (a mountain's rock and the snow layer on it, under one depth step apart) take turns as the view moves
++// (SR1Recomp: Smuggler's Run's snow level; MC2Recomp: a distant ramp). The fractions live after the emulated memory in the vram
++// buffer (the host makes it twice as large), 16 bits beside each 16-bit depth: the fraction and the low 8 bits of the depth it
++// belongs to, so a depth that something else wrote (an upload, a copy) counts as having no fraction, as on the PS2.
++override DEPTH_FRAC: bool = false;
++var<private> g_zf: f32 = 0.0;  // the fraction of the depth z_at worked out last (0 for shapes drawn at one depth)
 +var<private> g_tex_grad: vec4<f32> = vec4<f32>(0.0);  // du/dx, dv/dx, du/dy, dv/dy for one sample step, in level-0 texels
 +var<private> g_tex_grad_on: bool = false;
 +
  // Where a*b+c is fused into one rounding differs between shader compilers: FXC and the graphics drivers fuse their own way and
  // Microsoft's DXC another, which moved a colour or a texel position by the last bit on a few pixels (docs/speed.md, section DXC).
  // With EXPLICIT_FMA the sums below are written as fma() in the order the other compilers' pictures show (checked by the memory
-@@ -287,7 +295,11 @@ fn cache_bits_at(offset: u32, bit: u32, count: u32) -> u32 {
+@@ -287,7 +303,11 @@ fn cache_bits_at(offset: u32, bit: u32, count: u32) -> u32 {
  
  @compute @workgroup_size(64)
  fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -1692,7 +1715,7 @@ index db25862..f567ebf 100644
      if (i >= prm(2u)) {
          return;
      }
-@@ -320,13 +332,19 @@ fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
+@@ -320,13 +340,19 @@ fn upload(@builtin(global_invocation_id) gid: vec3<u32>) {
      // keeps its finer samples: a read gives the first sample of each pixel, and a write of that same value would otherwise
      // replace the finer depth of a scaled picture with one value per pixel, and the shapes drawn against it afterwards (lights
      // a hair in front of a slanted ceiling) would fail in stripes. A changed value is written to every sample as before.
@@ -1713,7 +1736,7 @@ index db25862..f567ebf 100644
  }
  
  @compute @workgroup_size(64)
-@@ -482,6 +500,9 @@ struct Setup {
+@@ -482,6 +508,9 @@ struct Setup {
      // setup's table entry starts (word 0 is `mip`, words 1 to 6 the base pointer and buffer width of levels 1 to 6).
      mip: u32,
      mip_at: u32,
@@ -1723,7 +1746,7 @@ index db25862..f567ebf 100644
  }
  
  const F_IIP: u32 = 1u;
-@@ -500,6 +521,8 @@ const F_FBA: u32 = 4096u;
+@@ -500,6 +529,8 @@ const F_FBA: u32 = 4096u;
  const F_TCC: u32 = 8192u;
  const F_BILINEAR: u32 = 16384u;
  const F_AEM: u32 = 32768u;
@@ -1732,7 +1755,7 @@ index db25862..f567ebf 100644
  
  fn load_setup(at: u32) -> Setup {
      var s: Setup;
-@@ -539,6 +562,8 @@ fn load_setup(at: u32) -> Setup {
+@@ -539,6 +570,8 @@ fn load_setup(at: u32) -> Setup {
      s.zf = fmt_at(at + 35u);
      s.mip = 0u;
      s.mip_at = 0u;
@@ -1741,7 +1764,7 @@ index db25862..f567ebf 100644
      return s;
  }
  
-@@ -719,12 +744,32 @@ fn tap32(s: Setup, page: u32, n: u32, k: u32) -> u32 {
+@@ -719,12 +752,32 @@ fn tap32(s: Setup, page: u32, n: u32, k: u32) -> u32 {
      return convert(s, raw & s.tf.mask);
  }
  
@@ -1776,7 +1799,7 @@ index db25862..f567ebf 100644
      }
      let u = uin - 0.5;
      let v = vin - 0.5;
-@@ -734,6 +779,11 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
+@@ -734,6 +787,11 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
      let xb = texel_x(s, x0 + 1);
      let ya = texel_y(s, y0);
      let yb = texel_y(s, y0 + 1);
@@ -1788,7 +1811,7 @@ index db25862..f567ebf 100644
      if (s.dec == 0xFFFFFFFFu && s.tpsm <= 1u) {
          // 32-bit colour: the page position and the position inside the page are separate sums of the x and the y part
          let pxa = (xa >> 6u) * 8192u + s.tf.base;
-@@ -744,9 +794,9 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
+@@ -744,9 +802,9 @@ fn sample(s: Setup, uin: f32, vin: f32, k: u32) -> u32 {
          let nxb = spread_x(xb);
          let nya = spread_y(ya);
          let nyb = spread_y(yb);
@@ -1800,7 +1823,7 @@ index db25862..f567ebf 100644
  }
  
  // Mip level n of the texture as a setup of its own (raster.cpp, level_setup): its base pointer and buffer width from the table, its size
-@@ -815,6 +865,50 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
+@@ -815,6 +873,50 @@ fn mip_pick(s: Setup, q: f32) -> Pick {
      return Pick(u32(whole), lod - whole, linear);
  }
  
@@ -1851,7 +1874,23 @@ index db25862..f567ebf 100644
  fn blend4(c00: u32, c10: u32, c01: u32, c11: u32, fx: f32, fy: f32) -> u32 {
      let a = vec4<f32>(vec4<u32>(c00 & 0xFFu, (c00 >> 8u) & 0xFFu, (c00 >> 16u) & 0xFFu, c00 >> 24u));
      let b = vec4<f32>(vec4<u32>(c10 & 0xFFu, (c10 >> 8u) & 0xFFu, (c10 >> 16u) & 0xFFu, c10 >> 24u));
-@@ -990,13 +1084,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -933,7 +1035,14 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+         zl = addr(s.zf, ux, uy);
+         if (ztst != 1u) {
+             let old = load_at(zl, k) & s.zmax;
+-            if ((ztst == 2u && z < old) || (ztst == 3u && z <= old)) {
++            if (DEPTH_FRAC && s.zmax == 0xFFFFu) {
++                // depth and fraction together (DEPTH_FRAC): 24 bits, the depth above the 8 fraction bits
++                let a = (z << 8u) | depth_frac(at.z, s.zmax);
++                let b = (old << 8u) | frac_at(zl, k, old);
++                if ((ztst == 2u && a < b) || (ztst == 3u && a <= b)) {
++                    return;
++                }
++            } else if ((ztst == 2u && z < old) || (ztst == 3u && z <= old)) {
+                 return;
+             }
+         }
+@@ -990,13 +1099,16 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
                      lv = nv * f32(1u << l.th);
                  }
              }
@@ -1869,7 +1908,7 @@ index db25862..f567ebf 100644
          let tr = i32(t & 0xFFu);
          let tg = i32((t >> 8u) & 0xFFu);
          let tb = i32((t >> 16u) & 0xFFu);
-@@ -1149,6 +1246,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1149,6 +1261,21 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
              g = g & 0xFF;
              b = b & 0xFF;
          }
@@ -1891,7 +1930,45 @@ index db25862..f567ebf 100644
          var out_a = u32(a & 0xFF);
          if (has(s, F_FBA)) {
              out_a = out_a | 0x80u;
-@@ -1165,7 +1277,7 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+@@ -1161,11 +1288,45 @@ fn plot(s: Setup, x: i32, y: i32, k: u32, at: Attr) {
+     }
+     if (write_z && zte) {
+         store(zl, k, z);
++        if (DEPTH_FRAC && s.zmax == 0xFFFFu) {
++            store_frac(zl, k, ((z & 0xFFu) << 8u) | depth_frac(at.z, s.zmax));
++        }
++    }
++}
++
++// DEPTH_FRAC: the fraction (8 bits) of the depth being drawn; none for a depth cut to the buffer's largest value.
++fn depth_frac(z: u32, zmax: u32) -> u32 {
++    if (z > zmax) {
++        return 0u;
++    }
++    return min(u32(g_zf * 256.0), 255u);
++}
++
++// DEPTH_FRAC: where the 16 bits beside a 16-bit depth are, after the emulated memory (4 MiB per sample) in the vram buffer.
++fn frac_word(l: Loc, k: u32) -> u32 {
++    return (1u << 20u) * SCALE * SCALE + l.word * SCALE * SCALE + k;
++}
++
++// DEPTH_FRAC: the fraction kept for the depth `old` now in the buffer, or 0 when what is kept belongs to another depth (written
++// some other way: an upload, a copy, a draw path that does not keep fractions).
++fn frac_at(l: Loc, k: u32, old: u32) -> u32 {
++    let e = (atomicLoad(&vram[frac_word(l, k)]) >> l.shift) & 0xFFFFu;
++    if ((e >> 8u) != (old & 0xFFu)) {
++        return 0u;
++    }
++    return e & 0xFFu;
++}
++
++fn store_frac(l: Loc, k: u32, value: u32) {
++    let w = frac_word(l, k);
++    let flip = (((atomicLoad(&vram[w]) >> l.shift) & 0xFFFFu) ^ value) & 0xFFFFu;
++    if (flip != 0u) {
++        atomicXor(&vram[w], flip << l.shift);
+     }
  }
  
  const PRIM_WORDS: u32 = 28u;
@@ -1900,7 +1977,15 @@ index db25862..f567ebf 100644
  const MIP_WORDS: u32 = 8u;
  
  fn fat(i: u32) -> f32 {
-@@ -1197,7 +1309,12 @@ fn edge_in(w: f32, inclusive: u32) -> bool {
+@@ -1184,6 +1345,7 @@ fn vertex_tex(p: u32, n: u32) -> vec4<f32> {
+ fn z_at(p: u32, d: f32) -> u32 {
+     let z0 = data[p + 24u];
+     let step = floor(d);
++    g_zf = d - step;
+     if (step >= 0.0) {
+         return z0 + u32(min(step, f32(0xFFFFFFFFu - z0)));
+     }
+@@ -1197,7 +1359,12 @@ fn edge_in(w: f32, inclusive: u32) -> bool {
  fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
      rt_copy = false;
      let kind = data[p + 1u];
@@ -1913,7 +1998,7 @@ index db25862..f567ebf 100644
      switch kind {
          case 0u {
              let x0 = fat(p + 4u);
-@@ -1264,6 +1381,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1264,6 +1431,21 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
              let t2 = vertex_tex(p, 2u);
              var t = weighted4(t0, t1, t2, w0, w1, w2);
              t.w = bary1(t0.w, t1.w, t2.w, w1, w2);
@@ -1935,7 +2020,23 @@ index db25862..f567ebf 100644
              at = Attr(c.x, c.y, c.z, c.w, t.x, t.y, t.z, t.w, z_at(p, sum2(fat(p + 25u), fat(p + 26u), w1, w2)));
          }
          case 1u {
-@@ -1373,14 +1505,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+@@ -1314,6 +1496,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+                 ty = (uy - y0) / dy;
+             }
+             let c = vertex_attr(p, 1u);
++            g_zf = 0.0;
+             at = Attr(c.x, c.y, c.z, c.w, lerp1(a.x, b.x, tx), lerp1(a.y, b.y, ty), b.z, b.w, data[p + 24u]);
+         }
+         case 2u {
+@@ -1365,6 +1548,7 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
+             }
+             let c = vertex_attr(p, 0u);
+             let t = vertex_tex(p, 0u);
++            g_zf = 0.0;
+             at = Attr(c.x, c.y, c.z, c.w, t.x, t.y, t.z, t.w, data[p + 24u]);
+         }
+     }
+@@ -1373,14 +1557,29 @@ fn shade_at(p: u32, s: Setup, x: i32, y: i32, k: u32, px: f32, py: f32) {
  
  @compute @workgroup_size(64)
  fn decode(@builtin(global_invocation_id) gid: vec3<u32>) {

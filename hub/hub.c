@@ -90,7 +90,7 @@
 #define DARK_GREY RGB(105, 105, 105)
 
 typedef struct {
-    int wide, hud43, menus43, sixty, scale, look, texfilter, smooth, truecolor, dither, pacing, vsync, fullscreen, skipintro;
+    int wide, hud43, menus43, sixty, scale, look, texfilter, smooth, zfrac, truecolor, dither, pacing, vsync, fullscreen, skipintro;
 } Options;
 
 typedef struct {
@@ -137,7 +137,7 @@ static const wchar_t* k_filter_names[3] = { L"Bilinear (PS2)", L"Nearest", L"Bil
 static const wchar_t* k_look_names[7] = { L"Crisp", L"Crisp + edges", L"Soft", L"Soft + edges", L"Sharp", L"Sharp + edges", L"FSR" };
 
 /* The Graphics tab's rows, in the order they are shown. */
-enum { S_FULLSCREEN, S_SCALE, S_VSYNC, S_PACING, S_LOOK, S_TEXFILTER, S_SIXTY, S_WIDE, S_HUD43, S_MENUS43, S_TRUECOLOR, S_DITHER, S_SMOOTH, S_SKIPINTRO, S_DISC, S_BACK, S_COUNT };
+enum { S_FULLSCREEN, S_SCALE, S_VSYNC, S_PACING, S_LOOK, S_TEXFILTER, S_SIXTY, S_WIDE, S_HUD43, S_MENUS43, S_TRUECOLOR, S_DITHER, S_SMOOTH, S_ZFRAC, S_SKIPINTRO, S_DISC, S_BACK, S_COUNT };
 static int g_page = PAGE_LIST;
 static int g_srow;      /* highlighted settings row */
 static int g_sscroll;   /* how far the settings rows are scrolled up, in pixels */
@@ -201,6 +201,7 @@ static void load_options(Game* g) {
     o->dither = GetPrivateProfileIntW(g->id, L"dither", 1, g_ini) != 0;   /* on: the game turns the PS2's dither on */
     o->look = GetPrivateProfileIntW(g->id, L"look", 0, g_ini);
     o->smooth = GetPrivateProfileIntW(g->id, L"smoothtextures", 0, g_ini) != 0;
+    o->zfrac = GetPrivateProfileIntW(g->id, L"zfight", 0, g_ini) != 0;
     if (o->look < 0 || o->look > LOOK_FSR) o->look = 0;
     o->texfilter = GetPrivateProfileIntW(g->id, L"texfilter", 0, g_ini);
     if (o->texfilter < 0 || o->texfilter > 2) o->texfilter = 0;
@@ -215,7 +216,7 @@ static void save_options(const Game* g) {
     const Options* o = &g->o;
     struct { const wchar_t* key; int v; } kv[] = {
         { L"widescreen", o->wide }, { L"hud43", o->hud43 }, { L"menus43", o->menus43 }, { L"60fps", o->sixty },
-        { L"scale", o->scale }, { L"look", o->look }, { L"texfilter", o->texfilter }, { L"smoothtextures", o->smooth }, { L"truecolor", o->truecolor }, { L"dither", o->dither },
+        { L"scale", o->scale }, { L"look", o->look }, { L"texfilter", o->texfilter }, { L"smoothtextures", o->smooth }, { L"zfight", o->zfrac }, { L"truecolor", o->truecolor }, { L"dither", o->dither },
         { L"framepacing", o->pacing }, { L"vsync", o->vsync },
         { L"fullscreen", o->fullscreen }, { L"skipintro", o->skipintro },
     };
@@ -1069,6 +1070,7 @@ static int prepare(const Game* g, Launch* L, wchar_t* err, size_t errn) {
     if (o->look) { wcscat(L->name, L" "); wcscat(L->name, k_look_words[o->look]); }
     if (o->texfilter) { wcscat(L->name, L" "); wcscat(L->name, k_filter_words[o->texfilter]); }
     if (o->smooth) wcscat(L->name, L" smoothtextures");
+    if (o->zfrac) wcscat(L->name, L" zfight");
     if (o->truecolor) wcscat(L->name, L" truecolor");
     if (!o->truecolor && !o->dither) wcscat(L->name, L" nodither");
     if (o->pacing) wcscat(L->name, L" framepacing");
@@ -1106,6 +1108,8 @@ static int prepare(const Game* g, Launch* L, wchar_t* err, size_t errn) {
     SetEnvironmentVariableW(L"PS2_FSR", o->look == LOOK_FSR ? L"1" : NULL);
     SetEnvironmentVariableW(L"PS2_TEX_FILTER", o->texfilter ? k_filter_words[o->texfilter] : NULL);
     SetEnvironmentVariableW(L"PS2_TEX_SS", o->smooth ? L"1" : NULL);
+    /* Fix Distant Z-Fighting: 16-bit depth keeps its fractions (runtime gs.wgsl, DEPTH_FRAC); not something the PS2 does */
+    SetEnvironmentVariableW(L"PS2_DEPTH_FRAC", o->zfrac ? L"1" : NULL);
     SetEnvironmentVariableW(L"PS2_PACE", o->pacing ? L"clock" : NULL);
     SetEnvironmentVariableW(L"PS2_PRESENT_MODE", o->vsync ? L"fifo" : NULL);
     SetEnvironmentVariableW(L"PS2_WINDOW_TITLE", L->title);
@@ -1217,7 +1221,7 @@ static int check(const wchar_t* id) {
         out(L"name=%ls\n", L.name);
         out(L"cwd=%ls\nexe=%ls\ncmd=%ls\n", g->tool, g->exe, L.cmd);
         static const wchar_t* vars[] = { L"PS2_SCALE", L"PS2_TRUE_COLOR", L"PS2_PACE",
-                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_WIDE_FLOAT", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR", L"PS2_WINDOW_ICON", L"PS2_KEYS" };
+                                         L"PS2_PRESENT_MODE", L"PS2_WINDOW_TITLE", L"PS2_WIDE_ONLY_IF", L"PS2_WIDE_WORD", L"PS2_WIDE_FLOAT", L"PS2_DITHER", L"PS2_LOOK", L"PS2_TEX_SS", L"PS2_DEPTH_FRAC", L"PS2_SKIP_TEXTURE", L"PS2_SKIP_SUBTRACT", L"PS2_TEX_FILTER", L"PS2_FSR", L"PS2_WINDOW_ICON", L"PS2_KEYS" };
         for (int v = 0; v < (int)(sizeof vars / sizeof vars[0]); v++) {
             wchar_t val[512];
             if (GetEnvironmentVariableW(vars[v], val, 512)) out(L"%ls=%ls\n", vars[v], val);
@@ -1618,6 +1622,7 @@ static void schange(HWND hwnd, int d) {
     case S_HUD43: t = &o->hud43; break;
     case S_SIXTY: t = &o->sixty; break;
     case S_SMOOTH: t = &o->smooth; break;
+    case S_ZFRAC: t = &o->zfrac; break;
     case S_DITHER: t = &o->dither; break;
     case S_PACING: t = &o->pacing; break;
     case S_VSYNC: t = &o->vsync; break;
@@ -1789,13 +1794,13 @@ static void paint_settings(HDC mem) {
         [S_FULLSCREEN] = L"Fullscreen", [S_SCALE] = L"Resolution", [S_VSYNC] = L"Vsync", [S_PACING] = L"Frame Pacing Fix",
         [S_LOOK] = L"Picture Mode", [S_TEXFILTER] = L"Texture Filtering", [S_SIXTY] = L"60 FPS", [S_WIDE] = L"Widescreen", [S_HUD43] = L"Fixed Widescreen HUD",
         [S_MENUS43] = L"Menu/Movie Aspect Ratio", [S_TRUECOLOR] = L"Color Settings", [S_DITHER] = L"Dithering",
-        [S_SMOOTH] = L"Smooth Distant Textures", [S_SKIPINTRO] = L"Skip Intro", [S_DISC] = L"Disc Image", [S_BACK] = L"BACK",
+        [S_SMOOTH] = L"Smooth Distant Textures", [S_ZFRAC] = L"Fix Distant Z-Fighting", [S_SKIPINTRO] = L"Skip Intro", [S_DISC] = L"Disc Image", [S_BACK] = L"BACK",
     };
     /* Only the patch credits have a line under the name. */
     static const wchar_t* notes[S_COUNT] = { [S_WIDE] = L"Patch by Arapapa", [S_SIXTY] = L"Patch by PeterDelta" };
     int vals[S_COUNT] = {
         [S_FULLSCREEN] = o->fullscreen, [S_VSYNC] = o->vsync, [S_PACING] = o->pacing, [S_SIXTY] = o->sixty, [S_WIDE] = o->wide,
-        [S_HUD43] = o->hud43, [S_DITHER] = o->dither, [S_SMOOTH] = o->smooth, [S_SKIPINTRO] = o->skipintro,
+        [S_HUD43] = o->hud43, [S_DITHER] = o->dither, [S_SMOOTH] = o->smooth, [S_ZFRAC] = o->zfrac, [S_SKIPINTRO] = o->skipintro,
     };
 
     int saved = SaveDC(mem);

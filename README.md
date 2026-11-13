@@ -40,6 +40,10 @@ Windows 10 or 11 (64-bit), a CPU with AVX2 and a Direct3D 12 graphics card.
 - **Color Settings**: the PS2's 16-bit picture, or the game's full 32-bit picture; **Dithering** (the PS2's dither on the
   16-bit picture)
 - **Smooth Distant Textures** (less shimmer on far buildings; not something a PS2 does)
+- **Fix Distant Z-Fighting** (not something a PS2 does): far away, the game's 16-bit depth buffer can't tell apart two
+  surfaces that touch, such as the lit top of a distant elevated ramp and its dark face, under one depth step apart, so a
+  row of dark teeth runs along the lit edge and moves as the camera does. With this on, the depth test also keeps the
+  fraction of each depth, so the nearer surface wins every frame and the edge stays clean
 - **Skip Intro**: straight to the menu, with the game's own developer switch
 
 **P1 Controls** chooses what plays as player 1, **Controller** or **Keyboard** (with the mouse), and rebinds every PS2
@@ -103,7 +107,10 @@ finished build. Cover art is downloaded at run time from
   - `menus43.txt`: the game state that tells a race from a menu, for Menu/Movie Aspect Ratio.
 - `patches/ps2-native-recomp.patch`: this project's changes to the toolkit: the MC2 HUD hooks and fixes the game needed to
   run, dithering, texture filtering, smooth distant textures, FSR, the 4:3 menus switch, and faster texture uploads
-  (drawing runs keep going over texture uploads, from MC1Recomp; `PS2_RENAME=0` turns that off, for comparison).
+  (drawing runs keep going over texture uploads, from MC1Recomp; `PS2_RENAME=0` turns that off, for comparison), and Fix
+  Distant Z-Fighting (`PS2_DEPTH_FRAC=1`, from SR1Recomp): 16-bit depth keeps 8 bits of its fraction in a second region
+  after the emulated memory (the buffer is twice as large when it is on), tagged with the low 8 bits of the depth it
+  belongs to, so a depth written another way (an upload, a copy) counts as having none, as on the PS2.
 - `ps2-native-recomp/`: the toolkit, as a git submodule.
 - `tools/`: the build script and the release packaging script.
 
